@@ -3,6 +3,7 @@ import { stat } from "node:fs/promises";
 import { loadConfig } from "./server/config.ts";
 import { openDatabase } from "./server/db/client.ts";
 import { runMigrationsFromDir } from "./server/db/migrator.ts";
+import { handleApi } from "./server/api/handler.ts";
 
 const ROOT = import.meta.dir;
 const MIGRATIONS_DIR = resolve(ROOT, "server/db/migrations");
@@ -12,13 +13,9 @@ const SERVER_ENTRY = resolve(ROOT, "dist/server/server.js");
 const config = loadConfig();
 
 const db = openDatabase(config.dbPath);
-try {
-  const result = runMigrationsFromDir(db, MIGRATIONS_DIR);
-  if (result.applied.length > 0) {
-    console.log(`[db] applied ${result.applied.length} migration(s) on startup`);
-  }
-} finally {
-  db.close();
+const result = runMigrationsFromDir(db, MIGRATIONS_DIR);
+if (result.applied.length > 0) {
+  console.log(`[db] applied ${result.applied.length} migration(s) on startup`);
 }
 
 const ssr = (await import(SERVER_ENTRY)) as {
@@ -40,6 +37,9 @@ const server = Bun.serve({
   hostname: config.host,
   idleTimeout: 30,
   async fetch(req) {
+    const apiResponse = await handleApi(req, { db });
+    if (apiResponse) return apiResponse;
+
     const url = new URL(req.url);
     const asset = await serveStatic(url.pathname);
     if (asset) return asset;

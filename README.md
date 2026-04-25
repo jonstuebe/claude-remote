@@ -57,24 +57,27 @@ All configuration is via environment variables. There is no config file in v1.
 
 | Variable                 | Default                | Description                                                    |
 | ------------------------ | ---------------------- | -------------------------------------------------------------- |
-| `PORT`                   | `2633`                 | Port the HTTP server listens on.                               |
+| `PORT`                   | `2633`                 | Port the HTTP server listens on (web in dev; everything in prod). |
+| `API_PORT`               | `2634`                 | Dev-only API port that Vite proxies `/api/*` to.               |
 | `HOST`                   | `127.0.0.1`            | Bind address. Set to `0.0.0.0` to expose on the LAN/Tailscale. |
 | `CLAUDE_REMOTE_DATA_DIR` | `~/.claude-remote`     | Directory for SQLite cache and any runtime state.              |
 | `CLAUDE_REMOTE_DB_PATH`  | `<DATA_DIR>/db.sqlite` | Override the SQLite file location directly.                    |
 
 ## Scripts
 
-| Script               | Description                                                  |
-| -------------------- | ------------------------------------------------------------ |
-| `bun run dev`        | Migrate, then run the dev server (Vite + TanStack Start).    |
-| `bun run build`      | Build the client + SSR bundles for production.               |
-| `bun run start`      | Run the production server (Bun.serve over the built output). |
-| `bun run db:migrate` | Apply pending SQL migrations.                                |
-| `bun run test`       | Run Vitest.                                                  |
-| `bun run test:watch` | Run Vitest in watch mode.                                    |
-| `bun run lint`       | Lint with oxlint.                                            |
-| `bun run format`     | Format with oxfmt.                                           |
-| `bun run typecheck`  | Type-check with tsgo.                                        |
+| Script               | Description                                                                 |
+| -------------------- | --------------------------------------------------------------------------- |
+| `bun run dev`        | Migrate, then run Vite (web) + a Bun API process side-by-side; Vite proxies `/api/*` to the API. |
+| `bun run dev:api`    | Run only the Bun API process (`server/dev-api.ts`) with `--hot`.            |
+| `bun run dev:web`    | Run only `vite dev` for the front-end.                                      |
+| `bun run build`      | Build the client + SSR bundles for production.                              |
+| `bun run start`      | Run the production server (single `Bun.serve` over the built output, including the API). |
+| `bun run db:migrate` | Apply pending SQL migrations.                                               |
+| `bun run test`       | Run Vitest.                                                                 |
+| `bun run test:watch` | Run Vitest in watch mode.                                                   |
+| `bun run lint`       | Lint with oxlint.                                                           |
+| `bun run format`     | Format with oxfmt.                                                          |
+| `bun run typecheck`  | Type-check with tsgo.                                                       |
 
 ## Database & migrations
 
@@ -87,12 +90,23 @@ SQLite, opened via `bun:sqlite`. Schema evolves through numbered SQL files in `s
 
 The runner has unit tests in `tests/migrator.test.ts`. Run them with `bun run test`.
 
+## HTTP API
+
+| Method   | Path                  | Description                                                                                        |
+| -------- | --------------------- | -------------------------------------------------------------------------------------------------- |
+| `GET`    | `/api/projects`       | List all registered projects.                                                                      |
+| `POST`   | `/api/projects`       | Register `{ name, repo_path }`. Validates the path is a git repo and detects the default branch.  |
+| `GET`    | `/api/projects/:id`   | Get a single project.                                                                              |
+| `DELETE` | `/api/projects/:id`   | Remove the registry row. **Does not** touch the filesystem at `repo_path`.                         |
+
+Validation errors return `400` (`409` for re-registering the same path) with `{ error: { code, field?, message } }`.
+
 ## A note on Vite
 
 `CLAUDE.md` in this repo says "don't use Vite, use `Bun.serve()`." This project is the documented exception: TanStack Start is built on Vite, and we take Vite as a build tool to get TanStack Start's framework value (file-based routing, server functions, type-safe data loading, SSR). At runtime everything still runs on Bun:
 
-- **Dev:** `vite dev` is invoked through Bun (`bun --bun x vite dev`), so the dev server process is a Bun process.
-- **Prod:** `vite build` produces a `{ fetch }`-style SSR bundle in `dist/server/server.js` plus static assets in `dist/client/`. The `bun run start` entry (`index.ts`) wraps that bundle in `Bun.serve()`, so the production server is a single Bun process that owns HTTP, the SQLite cache, and (in later slices) the WebSocket transport and Claude Agent SDK processes.
+- **Dev:** `bun run dev` launches two Bun processes: one runs `vite dev` for the web (HMR, TanStack Start) and one runs `server/dev-api.ts` (`Bun.serve` + `bun:sqlite`). Vite proxies `/api/*` to the API process so the front-end can call the real API in development. The split exists because Vite itself runs under Node, which can't import `bun:sqlite`.
+- **Prod:** `vite build` produces a `{ fetch }`-style SSR bundle in `dist/server/server.js` plus static assets in `dist/client/`. The `bun run start` entry (`index.ts`) wraps that bundle in a single `Bun.serve()` that owns the API, the SQLite cache, static assets, and SSR — and (in later slices) the WebSocket transport and Claude Agent SDK processes.
 
 This exception applies only to TanStack Start. New runtime code in this repo continues to use `Bun.serve()`, `bun:sqlite`, `Bun.file`, etc., per `CLAUDE.md`.
 

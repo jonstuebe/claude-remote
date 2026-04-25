@@ -7,7 +7,9 @@
   },
   "scripts": {
     "predev": "bun run db:migrate",
-    "dev": "vite dev",
+    "dev": "bun ./scripts/dev.ts",
+    "dev:api": "bun --hot ./server/dev-api.ts",
+    "dev:web": "bunx --bun vite dev",
     "build": "vite build",
     "start": "bun ./index.ts",
     "db:migrate": "bun ./server/db/migrate.ts",
