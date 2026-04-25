@@ -7,6 +7,11 @@ import {
   registerProject,
   type Project,
 } from "../projects/registry.ts";
+import {
+  ensureDefaultConversation,
+  listConversations,
+  type Conversation,
+} from "../conversations/registry.ts";
 
 export type ApiContext = {
   db: Database;
@@ -24,6 +29,11 @@ function projectsListUrl(pathname: string): boolean {
 
 function projectByIdMatch(pathname: string): string | null {
   const m = /^\/api\/projects\/([^/]+)\/?$/.exec(pathname);
+  return m ? decodeURIComponent(m[1]!) : null;
+}
+
+function projectConversationsMatch(pathname: string): string | null {
+  const m = /^\/api\/projects\/([^/]+)\/conversations\/?$/.exec(pathname);
   return m ? decodeURIComponent(m[1]!) : null;
 }
 
@@ -85,6 +95,21 @@ function handleDeleteProject(id: string, ctx: ApiContext): Response {
   return new Response(null, { status: 204 });
 }
 
+async function handleListProjectConversations(
+  projectId: string,
+  ctx: ApiContext,
+): Promise<Response> {
+  const project = getProject(ctx.db, projectId);
+  if (!project) {
+    return json(404, {
+      error: { code: "not_found", message: `No project with id "${projectId}"` },
+    });
+  }
+  await ensureDefaultConversation(ctx.db, project);
+  const conversations: Conversation[] = listConversations(ctx.db, project.id);
+  return json(200, { conversations });
+}
+
 export async function handleApi(req: Request, ctx: ApiContext): Promise<Response | null> {
   const url = new URL(req.url);
   if (!url.pathname.startsWith("/api/")) return null;
@@ -92,6 +117,17 @@ export async function handleApi(req: Request, ctx: ApiContext): Promise<Response
   if (projectsListUrl(url.pathname)) {
     if (req.method === "GET") return handleListProjects(ctx);
     if (req.method === "POST") return handleCreateProject(req, ctx);
+    return json(405, {
+      error: {
+        code: "method_not_allowed",
+        message: `Method ${req.method} not allowed on ${url.pathname}`,
+      },
+    });
+  }
+
+  const conversationsProjectId = projectConversationsMatch(url.pathname);
+  if (conversationsProjectId) {
+    if (req.method === "GET") return handleListProjectConversations(conversationsProjectId, ctx);
     return json(405, {
       error: {
         code: "method_not_allowed",
