@@ -1,9 +1,18 @@
 # dependencies (bun install)
 node_modules
 
-# output
+# build output
 out
 dist
+dist-ssr
+.output
+.nitro
+.tanstack
+.vinxi
+.wrangler
+src/routeTree.gen.ts
+
+# tarballs
 *.tgz
 
 # code coverage
@@ -12,8 +21,7 @@ coverage
 
 # logs
 logs
-_.log
-report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
+*.log
 
 # dotenv environment variable files
 .env
@@ -32,3 +40,15 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # Finder (MacOS) folder config
 .DS_Store
+
+# IDE
+.vscode/settings.json
+
+# local sqlite for dev
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+
+# scratch
+*.local

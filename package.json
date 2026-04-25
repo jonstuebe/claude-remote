@@ -1,12 +1,52 @@
 {
   "name": "claude-remote",
-  "module": "index.ts",
-  "type": "module",
   "private": true,
-  "devDependencies": {
-    "@types/bun": "latest"
+  "type": "module",
+  "imports": {
+    "#/*": "./src/*"
   },
-  "peerDependencies": {
-    "typescript": "^5"
+  "scripts": {
+    "predev": "bun run db:migrate",
+    "dev": "vite dev",
+    "build": "vite build",
+    "start": "bun ./index.ts",
+    "db:migrate": "bun ./server/db/migrate.ts",
+    "test": "bun --bun x vitest run",
+    "test:watch": "bun --bun x vitest",
+    "lint": "oxlint",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check",
+    "typecheck": "tsgo --noEmit"
+  },
+  "dependencies": {
+    "@base-ui-components/react": "^1.0.0-rc.0",
+    "@tailwindcss/vite": "^4.2.4",
+    "@tanstack/react-devtools": "latest",
+    "@tanstack/react-router": "^1.168.24",
+    "@tanstack/react-router-devtools": "latest",
+    "@tanstack/react-start": "^1.167.48",
+    "@tanstack/router-plugin": "latest",
+    "clsx": "^2.1.1",
+    "lucide-react": "^1.11.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "tailwind-merge": "^3.5.0",
+    "tailwindcss": "^4.2.4",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@tanstack/devtools-vite": "^0.6.0",
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/react": "^16.3.0",
+    "@types/bun": "latest",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@typescript/native-preview": "latest",
+    "@vitejs/plugin-react": "^6.0.1",
+    "happy-dom": "^15.11.7",
+    "oxfmt": "^0.46.0",
+    "oxlint": "^1.61.0",
+    "vite": "^8.0.10",
+    "vitest": "^4.1.5"
   }
 }

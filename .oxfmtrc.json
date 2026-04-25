@@ -1,0 +1,14 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "ignorePatterns": [
+    ".agents/**",
+    ".claude/**",
+    ".cursor/**",
+    ".output/**",
+    ".nitro/**",
+    ".tanstack/**",
+    "dist/**",
+    "node_modules/**",
+    "src/routeTree.gen.ts"
+  ]
+}

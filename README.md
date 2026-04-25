@@ -45,23 +45,56 @@ Core modules: Worktree Manager, Reconciler, Session Manager, Permission Broker, 
 
 ```bash
 bun install
-bun run db:migrate
+bun run db:migrate    # optional — `dev` and `start` migrate automatically
 bun run dev
 ```
 
+The dev server prints its URL on stdout; the production server is started with `bun run build && bun run start`.
+
+## Configuration
+
+All configuration is via environment variables. There is no config file in v1.
+
+| Variable                 | Default                | Description                                                    |
+| ------------------------ | ---------------------- | -------------------------------------------------------------- |
+| `PORT`                   | `2633`                 | Port the HTTP server listens on.                               |
+| `HOST`                   | `127.0.0.1`            | Bind address. Set to `0.0.0.0` to expose on the LAN/Tailscale. |
+| `CLAUDE_REMOTE_DATA_DIR` | `~/.claude-remote`     | Directory for SQLite cache and any runtime state.              |
+| `CLAUDE_REMOTE_DB_PATH`  | `<DATA_DIR>/db.sqlite` | Override the SQLite file location directly.                    |
+
 ## Scripts
 
-| Script               | Description                                 |
-| -------------------- | ------------------------------------------- |
-| `bun run dev`        | Run the dev server (Vite + TanStack Start). |
-| `bun run build`      | Build for production.                       |
-| `bun run start`      | Run the production server.                  |
-| `bun run db:migrate` | Apply SQL migrations.                       |
-| `bun run test`       | Run Vitest.                                 |
-| `bun run test:watch` | Run Vitest in watch mode.                   |
-| `bun run lint`       | Lint with oxlint.                           |
-| `bun run format`     | Format with oxfmt.                          |
-| `bun run typecheck`  | Type-check with tsgo.                       |
+| Script               | Description                                                  |
+| -------------------- | ------------------------------------------------------------ |
+| `bun run dev`        | Migrate, then run the dev server (Vite + TanStack Start).    |
+| `bun run build`      | Build the client + SSR bundles for production.               |
+| `bun run start`      | Run the production server (Bun.serve over the built output). |
+| `bun run db:migrate` | Apply pending SQL migrations.                                |
+| `bun run test`       | Run Vitest.                                                  |
+| `bun run test:watch` | Run Vitest in watch mode.                                    |
+| `bun run lint`       | Lint with oxlint.                                            |
+| `bun run format`     | Format with oxfmt.                                           |
+| `bun run typecheck`  | Type-check with tsgo.                                        |
+
+## Database & migrations
+
+SQLite, opened via `bun:sqlite`. Schema evolves through numbered SQL files in `server/db/migrations/` (`001_init.sql`, `002_*.sql`, ...). The Migration Runner:
+
+- Applies pending migrations in version order on every server start (and via `bun run db:migrate`).
+- Tracks applied versions in a `schema_version` table, so re-runs are idempotent.
+- Wraps each migration in a transaction — partial application rolls back automatically.
+- Fails loudly on malformed filenames, duplicate version numbers, empty files, or invalid SQL, with an error that names the offending file.
+
+The runner has unit tests in `tests/migrator.test.ts`. Run them with `bun run test`.
+
+## A note on Vite
+
+`CLAUDE.md` in this repo says "don't use Vite, use `Bun.serve()`." This project is the documented exception: TanStack Start is built on Vite, and we take Vite as a build tool to get TanStack Start's framework value (file-based routing, server functions, type-safe data loading, SSR). At runtime everything still runs on Bun:
+
+- **Dev:** `vite dev` is invoked through Bun (`bun --bun x vite dev`), so the dev server process is a Bun process.
+- **Prod:** `vite build` produces a `{ fetch }`-style SSR bundle in `dist/server/server.js` plus static assets in `dist/client/`. The `bun run start` entry (`index.ts`) wraps that bundle in `Bun.serve()`, so the production server is a single Bun process that owns HTTP, the SQLite cache, and (in later slices) the WebSocket transport and Claude Agent SDK processes.
+
+This exception applies only to TanStack Start. New runtime code in this repo continues to use `Bun.serve()`, `bun:sqlite`, `Bun.file`, etc., per `CLAUDE.md`.
 
 ## Network access
 
