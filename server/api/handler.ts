@@ -8,10 +8,13 @@ import {
   type Project,
 } from "../projects/registry.ts";
 import {
+  ConversationValidationError,
+  createConversation,
   ensureDefaultConversation,
   getConversation,
   listConversations,
   type Conversation,
+  type CreateConversationInput,
 } from "../conversations/registry.ts";
 import type { SessionManager } from "../sessions/manager.ts";
 import { SessionStartError } from "../sessions/manager.ts";
@@ -125,6 +128,73 @@ async function handleListProjectConversations(
   return json(200, { conversations });
 }
 
+function parseCreateConversationInput(body: Record<string, unknown>):
+  | CreateConversationInput
+  | {
+      error: { code: string; field: string; message: string };
+    } {
+  const mode = body.mode;
+  if (mode === "main") return { mode: "main" };
+  if (mode === "new-worktree" || mode === "existing-branch") {
+    if (typeof body.branch !== "string") {
+      return {
+        error: {
+          code: "invalid_body",
+          field: "branch",
+          message: "branch is required for this mode",
+        },
+      };
+    }
+    if (mode === "new-worktree") {
+      const baseBranch = typeof body.base_branch === "string" ? body.base_branch : undefined;
+      return { mode, branch: body.branch, base_branch: baseBranch };
+    }
+    return { mode, branch: body.branch };
+  }
+  return {
+    error: {
+      code: "invalid_body",
+      field: "mode",
+      message: 'mode must be "main", "new-worktree", or "existing-branch"',
+    },
+  };
+}
+
+async function handleCreateProjectConversation(
+  projectId: string,
+  req: Request,
+  ctx: ApiContext,
+): Promise<Response> {
+  const project = getProject(ctx.db, projectId);
+  if (!project) {
+    return json(404, {
+      error: { code: "not_found", message: `No project with id "${projectId}"` },
+    });
+  }
+  const body = await readJson(req);
+  if (!isPlainObject(body)) {
+    return json(400, {
+      error: { code: "invalid_body", message: "Request body must be a JSON object" },
+    });
+  }
+  const parsed = parseCreateConversationInput(body);
+  if ("error" in parsed) return json(400, { error: parsed.error });
+
+  await ensureDefaultConversation(ctx.db, project);
+  try {
+    const conversation = await createConversation(ctx.db, project, parsed);
+    return json(201, conversation);
+  } catch (err) {
+    if (err instanceof ConversationValidationError) {
+      const status = err.code === "worktree_in_use" ? 409 : 400;
+      return json(status, {
+        error: { code: err.code, field: err.field, message: err.message },
+      });
+    }
+    throw err;
+  }
+}
+
 function handleGetConversation(id: string, ctx: ApiContext): Response {
   const conversation = getConversation(ctx.db, id);
   if (!conversation) {
@@ -199,6 +269,8 @@ export async function handleApi(req: Request, ctx: ApiContext): Promise<Response
   const conversationsProjectId = projectConversationsMatch(url.pathname);
   if (conversationsProjectId) {
     if (req.method === "GET") return handleListProjectConversations(conversationsProjectId, ctx);
+    if (req.method === "POST")
+      return handleCreateProjectConversation(conversationsProjectId, req, ctx);
     return json(405, {
       error: {
         code: "method_not_allowed",

@@ -1,13 +1,15 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
-import { ChevronLeft, GitBranch, MessagesSquare, Pin } from "lucide-react";
+import { ChevronLeft, GitBranch, MessagesSquare, Pin, Plus, X } from "lucide-react";
 import { cn } from "../lib/cn";
 import { formatRelativeTime } from "../lib/time";
 import {
   ApiRequestError,
+  createConversation,
   getProject,
   listConversations,
   type Conversation,
+  type CreateConversationInput,
   type Project,
 } from "../lib/api";
 
@@ -76,7 +78,17 @@ function ProjectDetailRoute() {
       )}
 
       {state.kind === "ok" && (
-        <ProjectDetail project={state.project} conversations={state.conversations} />
+        <ProjectDetail
+          project={state.project}
+          conversations={state.conversations}
+          onConversationCreated={(conversation) =>
+            setState({
+              kind: "ok",
+              project: state.project,
+              conversations: [...state.conversations, conversation],
+            })
+          }
+        />
       )}
     </main>
   );
@@ -85,10 +97,14 @@ function ProjectDetailRoute() {
 function ProjectDetail({
   project,
   conversations,
+  onConversationCreated,
 }: {
   project: Project;
   conversations: Conversation[];
+  onConversationCreated: (conversation: Conversation) => void;
 }) {
+  const [showForm, setShowForm] = useState(false);
+
   return (
     <>
       <header className="mb-6">
@@ -106,7 +122,38 @@ function ProjectDetail({
       </header>
 
       <section>
-        <h2 className="mb-3 text-sm font-medium text-muted-foreground">Conversations</h2>
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <h2 className="text-sm font-medium text-muted-foreground">Conversations</h2>
+          <button
+            type="button"
+            onClick={() => setShowForm((v) => !v)}
+            className={cn(
+              "inline-flex h-9 items-center gap-2 rounded-lg px-3 text-sm font-medium transition",
+              showForm
+                ? "bg-muted text-foreground hover:bg-accent"
+                : "bg-primary text-primary-foreground hover:opacity-90",
+            )}
+          >
+            {showForm ? (
+              <X className="size-4" aria-hidden />
+            ) : (
+              <Plus className="size-4" aria-hidden />
+            )}
+            <span>{showForm ? "Cancel" : "New"}</span>
+          </button>
+        </div>
+
+        {showForm && (
+          <NewConversationForm
+            project={project}
+            existingPaths={new Set(conversations.map((c) => c.worktree_path))}
+            onCreated={(conversation) => {
+              onConversationCreated(conversation);
+              setShowForm(false);
+            }}
+          />
+        )}
+
         {conversations.length === 0 ? (
           <ConversationsEmpty />
         ) : (
@@ -118,6 +165,198 @@ function ProjectDetail({
         )}
       </section>
     </>
+  );
+}
+
+type NewConversationMode = "main" | "new-worktree" | "existing-branch";
+type NewConversationErrors = { branch?: string; base_branch?: string; form?: string };
+
+function NewConversationForm({
+  project,
+  existingPaths,
+  onCreated,
+}: {
+  project: Project;
+  existingPaths: Set<string>;
+  onCreated: (conversation: Conversation) => void;
+}) {
+  const [mode, setMode] = useState<NewConversationMode>("new-worktree");
+  const [branch, setBranch] = useState("");
+  const [baseBranch, setBaseBranch] = useState("");
+  const [errors, setErrors] = useState<NewConversationErrors>({});
+  const [submitting, setSubmitting] = useState(false);
+
+  const mainAlreadyClaimed = existingPaths.has(project.repo_path);
+
+  const onSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrors({});
+    setSubmitting(true);
+    try {
+      const input: CreateConversationInput =
+        mode === "main"
+          ? { mode }
+          : mode === "new-worktree"
+            ? {
+                mode,
+                branch,
+                ...(baseBranch.trim() ? { base_branch: baseBranch.trim() } : {}),
+              }
+            : { mode, branch };
+      const conversation = await createConversation(project.id, input);
+      onCreated(conversation);
+      setBranch("");
+      setBaseBranch("");
+    } catch (err) {
+      if (err instanceof ApiRequestError) {
+        const field = err.body.field;
+        if (field === "branch" || field === "base_branch") {
+          setErrors({ [field]: err.body.message });
+        } else {
+          setErrors({ form: err.body.message });
+        }
+      } else {
+        setErrors({ form: err instanceof Error ? err.message : "Create failed" });
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <form
+      onSubmit={onSubmit}
+      className="mb-6 flex flex-col gap-4 rounded-2xl border border-border/60 bg-card p-5"
+    >
+      <fieldset className="flex flex-col gap-2">
+        <legend className="mb-1 text-sm font-medium">Mode</legend>
+        <ModeOption
+          checked={mode === "main"}
+          onChange={() => setMode("main")}
+          label="Attach to main worktree"
+          description={
+            mainAlreadyClaimed
+              ? "Already attached to another conversation."
+              : "Use the project's main checkout."
+          }
+          disabled={mainAlreadyClaimed}
+        />
+        <ModeOption
+          checked={mode === "new-worktree"}
+          onChange={() => setMode("new-worktree")}
+          label="Create new worktree on a new branch"
+          description="Branches off a base branch into a fresh worktree directory."
+        />
+        <ModeOption
+          checked={mode === "existing-branch"}
+          onChange={() => setMode("existing-branch")}
+          label="Attach to existing branch"
+          description="Adds a worktree that checks out a branch that already exists."
+        />
+      </fieldset>
+
+      {mode !== "main" && (
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor="conversation-branch" className="text-sm font-medium">
+            Branch
+          </label>
+          <input
+            id="conversation-branch"
+            value={branch}
+            onChange={(e) => setBranch(e.target.value)}
+            placeholder={mode === "new-worktree" ? "feature/my-thing" : "existing-branch"}
+            autoComplete="off"
+            autoCapitalize="off"
+            spellCheck={false}
+            className={cn(inputClass(!!errors.branch), "font-mono text-sm")}
+          />
+          {errors.branch && <p className="text-xs text-destructive">{errors.branch}</p>}
+        </div>
+      )}
+
+      {mode === "new-worktree" && (
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor="conversation-base-branch" className="text-sm font-medium">
+            Base branch <span className="text-muted-foreground">(optional)</span>
+          </label>
+          <input
+            id="conversation-base-branch"
+            value={baseBranch}
+            onChange={(e) => setBaseBranch(e.target.value)}
+            placeholder={project.default_branch}
+            autoComplete="off"
+            autoCapitalize="off"
+            spellCheck={false}
+            className={cn(inputClass(!!errors.base_branch), "font-mono text-sm")}
+          />
+          {errors.base_branch && <p className="text-xs text-destructive">{errors.base_branch}</p>}
+          <p className="text-xs text-muted-foreground">
+            Defaults to <span className="font-mono">{project.default_branch}</span>.
+          </p>
+        </div>
+      )}
+
+      {errors.form && (
+        <p className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+          {errors.form}
+        </p>
+      )}
+
+      <div className="flex justify-end">
+        <button
+          type="submit"
+          disabled={submitting || (mode === "main" && mainAlreadyClaimed)}
+          className="inline-flex h-10 items-center rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {submitting ? "Creating…" : "Create conversation"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function ModeOption({
+  checked,
+  onChange,
+  label,
+  description,
+  disabled,
+}: {
+  checked: boolean;
+  onChange: () => void;
+  label: string;
+  description: string;
+  disabled?: boolean;
+}) {
+  return (
+    <label
+      className={cn(
+        "flex cursor-pointer items-start gap-3 rounded-lg border bg-background p-3 transition",
+        checked ? "border-primary/60" : "border-border/60 hover:border-border",
+        disabled && "cursor-not-allowed opacity-50",
+      )}
+    >
+      <input
+        type="radio"
+        name="conversation-mode"
+        className="mt-1"
+        checked={checked}
+        onChange={onChange}
+        disabled={disabled}
+      />
+      <span className="flex-1">
+        <span className="block text-sm font-medium">{label}</span>
+        <span className="mt-0.5 block text-xs text-muted-foreground">{description}</span>
+      </span>
+    </label>
+  );
+}
+
+function inputClass(hasError: boolean): string {
+  return cn(
+    "h-10 w-full rounded-lg border bg-background px-3 text-sm outline-none transition",
+    "border-input focus:border-ring focus:ring-2 focus:ring-ring/30",
+    hasError && "border-destructive focus:border-destructive focus:ring-destructive/30",
   );
 }
 

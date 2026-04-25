@@ -92,6 +92,23 @@ export async function listConversations(projectId: string): Promise<Conversation
   return data.conversations;
 }
 
+export type CreateConversationInput =
+  | { mode: "main" }
+  | { mode: "new-worktree"; branch: string; base_branch?: string }
+  | { mode: "existing-branch"; branch: string };
+
+export async function createConversation(
+  projectId: string,
+  input: CreateConversationInput,
+): Promise<Conversation> {
+  const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/conversations`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return unwrap<Conversation>(res);
+}
+
 export type AssistantBlock =
   | { type: "text"; text: string }
   | { type: "thinking"; text: string }
