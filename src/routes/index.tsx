@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
 import { FolderGit2, GitBranch, Plus, Trash2, X } from "lucide-react";
 import { cn } from "../lib/cn";
@@ -197,8 +197,12 @@ function ProjectCard({
   onDelete: (project: Project) => void;
 }) {
   return (
-    <li className="flex items-start justify-between gap-3 rounded-2xl border border-border/60 bg-card p-4">
-      <div className="min-w-0 flex-1">
+    <li className="relative rounded-2xl border border-border/60 bg-card transition hover:border-border">
+      <Link
+        to="/projects/$projectId"
+        params={{ projectId: project.id }}
+        className="block p-4 pr-14"
+      >
         <h2 className="truncate text-base font-semibold">{project.name}</h2>
         <p
           className="mt-1 truncate font-mono text-xs text-muted-foreground"
@@ -210,12 +214,16 @@ function ProjectCard({
           <GitBranch className="size-3" aria-hidden />
           <span className="font-mono">{project.default_branch}</span>
         </div>
-      </div>
+      </Link>
       <button
         type="button"
-        onClick={() => onDelete(project)}
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onDelete(project);
+        }}
         aria-label={`Delete ${project.name}`}
-        className="inline-flex size-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive"
+        className="absolute right-3 top-3 inline-flex size-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive"
       >
         <Trash2 className="size-4" aria-hidden />
       </button>

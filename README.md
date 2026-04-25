@@ -55,29 +55,29 @@ The dev server prints its URL on stdout; the production server is started with `
 
 All configuration is via environment variables. There is no config file in v1.
 
-| Variable                 | Default                | Description                                                    |
-| ------------------------ | ---------------------- | -------------------------------------------------------------- |
+| Variable                 | Default                | Description                                                       |
+| ------------------------ | ---------------------- | ----------------------------------------------------------------- |
 | `PORT`                   | `2633`                 | Port the HTTP server listens on (web in dev; everything in prod). |
-| `API_PORT`               | `2634`                 | Dev-only API port that Vite proxies `/api/*` to.               |
-| `HOST`                   | `127.0.0.1`            | Bind address. Set to `0.0.0.0` to expose on the LAN/Tailscale. |
-| `CLAUDE_REMOTE_DATA_DIR` | `~/.claude-remote`     | Directory for SQLite cache and any runtime state.              |
-| `CLAUDE_REMOTE_DB_PATH`  | `<DATA_DIR>/db.sqlite` | Override the SQLite file location directly.                    |
+| `API_PORT`               | `2634`                 | Dev-only API port that Vite proxies `/api/*` to.                  |
+| `HOST`                   | `127.0.0.1`            | Bind address. Set to `0.0.0.0` to expose on the LAN/Tailscale.    |
+| `CLAUDE_REMOTE_DATA_DIR` | `~/.claude-remote`     | Directory for SQLite cache and any runtime state.                 |
+| `CLAUDE_REMOTE_DB_PATH`  | `<DATA_DIR>/db.sqlite` | Override the SQLite file location directly.                       |
 
 ## Scripts
 
-| Script               | Description                                                                 |
-| -------------------- | --------------------------------------------------------------------------- |
+| Script               | Description                                                                                      |
+| -------------------- | ------------------------------------------------------------------------------------------------ |
 | `bun run dev`        | Migrate, then run Vite (web) + a Bun API process side-by-side; Vite proxies `/api/*` to the API. |
-| `bun run dev:api`    | Run only the Bun API process (`server/dev-api.ts`) with `--hot`.            |
-| `bun run dev:web`    | Run only `vite dev` for the front-end.                                      |
-| `bun run build`      | Build the client + SSR bundles for production.                              |
-| `bun run start`      | Run the production server (single `Bun.serve` over the built output, including the API). |
-| `bun run db:migrate` | Apply pending SQL migrations.                                               |
-| `bun run test`       | Run Vitest.                                                                 |
-| `bun run test:watch` | Run Vitest in watch mode.                                                   |
-| `bun run lint`       | Lint with oxlint.                                                           |
-| `bun run format`     | Format with oxfmt.                                                          |
-| `bun run typecheck`  | Type-check with tsgo.                                                       |
+| `bun run dev:api`    | Run only the Bun API process (`server/dev-api.ts`) with `--hot`.                                 |
+| `bun run dev:web`    | Run only `vite dev` for the front-end.                                                           |
+| `bun run build`      | Build the client + SSR bundles for production.                                                   |
+| `bun run start`      | Run the production server (single `Bun.serve` over the built output, including the API).         |
+| `bun run db:migrate` | Apply pending SQL migrations.                                                                    |
+| `bun run test`       | Run Vitest.                                                                                      |
+| `bun run test:watch` | Run Vitest in watch mode.                                                                        |
+| `bun run lint`       | Lint with oxlint.                                                                                |
+| `bun run format`     | Format with oxfmt.                                                                               |
+| `bun run typecheck`  | Type-check with tsgo.                                                                            |
 
 ## Database & migrations
 
@@ -92,12 +92,12 @@ The runner has unit tests in `tests/migrator.test.ts`. Run them with `bun run te
 
 ## HTTP API
 
-| Method   | Path                  | Description                                                                                        |
-| -------- | --------------------- | -------------------------------------------------------------------------------------------------- |
-| `GET`    | `/api/projects`       | List all registered projects.                                                                      |
-| `POST`   | `/api/projects`       | Register `{ name, repo_path }`. Validates the path is a git repo and detects the default branch.  |
-| `GET`    | `/api/projects/:id`   | Get a single project.                                                                              |
-| `DELETE` | `/api/projects/:id`   | Remove the registry row. **Does not** touch the filesystem at `repo_path`.                         |
+| Method   | Path                | Description                                                                                      |
+| -------- | ------------------- | ------------------------------------------------------------------------------------------------ |
+| `GET`    | `/api/projects`     | List all registered projects.                                                                    |
+| `POST`   | `/api/projects`     | Register `{ name, repo_path }`. Validates the path is a git repo and detects the default branch. |
+| `GET`    | `/api/projects/:id` | Get a single project.                                                                            |
+| `DELETE` | `/api/projects/:id` | Remove the registry row. **Does not** touch the filesystem at `repo_path`.                       |
 
 Validation errors return `400` (`409` for re-registering the same path) with `{ error: { code, field?, message } }`.
 

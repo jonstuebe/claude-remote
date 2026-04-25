@@ -65,3 +65,11 @@ export async function detectDefaultBranch(repoPath: string): Promise<string> {
 
   return "main";
 }
+
+export async function detectCurrentBranch(repoPath: string): Promise<string | null> {
+  const absolute = resolve(repoPath);
+  const result = await $`git -C ${absolute} branch --show-current`.quiet().nothrow();
+  if (result.exitCode !== 0) return null;
+  const branch = result.stdout.toString().trim();
+  return branch.length > 0 ? branch : null;
+}

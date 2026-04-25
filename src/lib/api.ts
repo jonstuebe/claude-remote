@@ -13,6 +13,22 @@ export type RegisterProjectInput = {
   repo_path: string;
 };
 
+export type ConversationStatus = "active" | "orphaned" | "archived";
+
+export type Conversation = {
+  id: string;
+  project_id: string;
+  worktree_path: string;
+  branch: string;
+  session_id: string | null;
+  title: string;
+  color: string | null;
+  is_default: boolean;
+  status: ConversationStatus;
+  created_at: string;
+  last_active_at: string;
+};
+
 export type ApiError = {
   code: string;
   field?: string;
@@ -63,4 +79,15 @@ export async function registerProject(input: RegisterProjectInput): Promise<Proj
 export async function deleteProject(id: string): Promise<void> {
   const res = await fetch(`/api/projects/${encodeURIComponent(id)}`, { method: "DELETE" });
   await unwrap<void>(res);
+}
+
+export async function getProject(id: string): Promise<Project> {
+  const res = await fetch(`/api/projects/${encodeURIComponent(id)}`);
+  return unwrap<Project>(res);
+}
+
+export async function listConversations(projectId: string): Promise<Conversation[]> {
+  const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/conversations`);
+  const data = await unwrap<{ conversations: Conversation[] }>(res);
+  return data.conversations;
 }
