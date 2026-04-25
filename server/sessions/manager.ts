@@ -1,7 +1,13 @@
 import type { Database } from "bun:sqlite";
 import type { AssistantBlock } from "../transcript/reader.ts";
 import { InputStream } from "./input-stream.ts";
-import type { Listener, SessionEvent, SpawnedSDKMessage, Spawner } from "./types.ts";
+import type {
+  Listener,
+  SessionEvent,
+  SpawnedSDKMessage,
+  Spawner,
+  SpawnInputMessage,
+} from "./types.ts";
 
 export class SessionStartError extends Error {
   readonly code: string;
@@ -105,7 +111,10 @@ export class SessionManager {
     return [...(this.buffered.get(conversationId) ?? [])];
   }
 
-  async start(conversationId: string): Promise<SessionInfo> {
+  async start(
+    conversationId: string,
+    options: { firstInput?: SpawnInputMessage } = {},
+  ): Promise<SessionInfo> {
     const inflight = this.inflight.get(conversationId);
     if (inflight) return inflight;
 
@@ -129,7 +138,7 @@ export class SessionManager {
       this.db.run("DELETE FROM session_ledger WHERE conversation_id = ?", [conversationId]);
     }
 
-    const promise = this.doSpawn(conversationId);
+    const promise = this.doSpawn(conversationId, options.firstInput);
     this.inflight.set(conversationId, promise);
     try {
       return await promise;
@@ -139,18 +148,31 @@ export class SessionManager {
   }
 
   async send(conversationId: string, text: string): Promise<void> {
-    const session = this.active.get(conversationId) ?? null;
-    if (!session) {
-      await this.start(conversationId);
-    }
-    const active = this.active.get(conversationId);
-    if (!active) {
-      throw new SessionStartError("not_started", "Session is not running");
-    }
-    active.input.push({
+    const message: SpawnInputMessage = {
       type: "user",
       message: { role: "user", content: text },
-    });
+    };
+
+    const active = this.active.get(conversationId);
+    if (active && this.isPidAlive(active.host_pid)) {
+      active.input.push(message);
+      return;
+    }
+
+    // Concurrent send raced ahead of us — wait for that spawn, then push.
+    const inflight = this.inflight.get(conversationId);
+    if (inflight) {
+      await inflight;
+      const ready = this.active.get(conversationId);
+      if (!ready) throw new SessionStartError("not_started", "Session is not running");
+      ready.input.push(message);
+      return;
+    }
+
+    // First send for this conversation. Pre-buffer the user's text so the SDK
+    // has input on its first read — without it, the SDK never emits the init
+    // message we await on start, and we deadlock.
+    await this.start(conversationId, { firstInput: message });
   }
 
   async stop(conversationId: string): Promise<void> {
@@ -161,7 +183,10 @@ export class SessionManager {
     this.cleanup(conversationId, "stopped");
   }
 
-  private async doSpawn(conversationId: string): Promise<SessionInfo> {
+  private async doSpawn(
+    conversationId: string,
+    firstInput?: SpawnInputMessage,
+  ): Promise<SessionInfo> {
     const conversation = this.db
       .prepare<ConversationRow, [string]>(
         "SELECT id, worktree_path FROM conversations WHERE id = ?",
@@ -200,6 +225,7 @@ export class SessionManager {
     }
 
     const input = new InputStream();
+    if (firstInput) input.push(firstInput);
     const result = this.spawner({ cwd: conversation.worktree_path, input });
 
     const initState: {

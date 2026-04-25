@@ -115,6 +115,14 @@ function ConversationRoute() {
     setErrorBanner(null);
     try {
       await sendConversationMessage(conversationId, text);
+      const optimistic: TranscriptMessage = {
+        kind: "user_message",
+        uuid: `local-${crypto.randomUUID()}`,
+        ts: new Date().toISOString(),
+        text,
+      };
+      seenUuids.current.add(optimistic.uuid);
+      setMessages((prev) => [...prev, optimistic]);
       setDraft("");
     } catch (err) {
       const message = err instanceof Error ? err.message : "Send failed";

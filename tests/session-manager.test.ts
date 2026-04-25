@@ -381,6 +381,72 @@ describe("SessionManager", () => {
     }
   });
 
+  test("send pre-buffers the user's text so the SDK has input before init", async () => {
+    const conversation = await makeConversation("send-firstinput");
+    const tracker = new SpawnerTracker();
+    const manager = new SessionManager({
+      db,
+      spawner: tracker.spawner,
+      isPidAlive: () => true,
+      hostPid: 1000,
+    });
+
+    // No prior start. send() must spawn AND deliver the text without waiting on
+    // anything from outside (the real SDK won't emit init until input arrives).
+    const sendPromise = manager.send(conversation.id, "first message");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const consumed: { type: string; content: unknown }[] = [];
+    void (async () => {
+      for await (const msg of tracker.latest().options.input) {
+        consumed.push({ type: msg.type, content: msg.message.content });
+      }
+    })();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(consumed[0]).toEqual({ type: "user", content: "first message" });
+
+    // Now the SDK can emit init in response to the buffered input.
+    tracker.latest().emit(initMessage("sdk-firstinput"));
+    await sendPromise;
+  });
+
+  test("concurrent sends from a cold start each deliver their text", async () => {
+    const conversation = await makeConversation("send-concurrent");
+    const tracker = new SpawnerTracker();
+    const manager = new SessionManager({
+      db,
+      spawner: tracker.spawner,
+      isPidAlive: () => true,
+      hostPid: 1000,
+    });
+
+    const a = manager.send(conversation.id, "alpha");
+    const b = manager.send(conversation.id, "beta");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(tracker.spawns).toHaveLength(1);
+
+    const consumed: unknown[] = [];
+    void (async () => {
+      for await (const msg of tracker.latest().options.input) {
+        consumed.push(msg.message.content);
+      }
+    })();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    tracker.latest().emit(initMessage("sdk-conc-send"));
+    await Promise.all([a, b]);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(consumed).toEqual(["alpha", "beta"]);
+  });
+
   test("stop closes input, aborts spawn, deletes ledger row, emits session_end", async () => {
     const conversation = await makeConversation("stop");
     const tracker = new SpawnerTracker();
