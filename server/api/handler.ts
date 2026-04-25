@@ -9,12 +9,17 @@ import {
 } from "../projects/registry.ts";
 import {
   ensureDefaultConversation,
+  getConversation,
   listConversations,
   type Conversation,
 } from "../conversations/registry.ts";
+import type { SessionManager } from "../sessions/manager.ts";
+import { SessionStartError } from "../sessions/manager.ts";
+import { readTranscript } from "../transcript/reader.ts";
 
 export type ApiContext = {
   db: Database;
+  sessions: SessionManager;
 };
 
 const json = (status: number, body: unknown): Response =>
@@ -34,6 +39,16 @@ function projectByIdMatch(pathname: string): string | null {
 
 function projectConversationsMatch(pathname: string): string | null {
   const m = /^\/api\/projects\/([^/]+)\/conversations\/?$/.exec(pathname);
+  return m ? decodeURIComponent(m[1]!) : null;
+}
+
+function conversationByIdMatch(pathname: string): string | null {
+  const m = /^\/api\/conversations\/([^/]+)\/?$/.exec(pathname);
+  return m ? decodeURIComponent(m[1]!) : null;
+}
+
+function conversationMessagesMatch(pathname: string): string | null {
+  const m = /^\/api\/conversations\/([^/]+)\/messages\/?$/.exec(pathname);
   return m ? decodeURIComponent(m[1]!) : null;
 }
 
@@ -110,6 +125,62 @@ async function handleListProjectConversations(
   return json(200, { conversations });
 }
 
+function handleGetConversation(id: string, ctx: ApiContext): Response {
+  const conversation = getConversation(ctx.db, id);
+  if (!conversation) {
+    return json(404, {
+      error: { code: "not_found", message: `No conversation with id "${id}"` },
+    });
+  }
+  return json(200, conversation);
+}
+
+async function handleGetConversationMessages(id: string, ctx: ApiContext): Promise<Response> {
+  const conversation = getConversation(ctx.db, id);
+  if (!conversation) {
+    return json(404, {
+      error: { code: "not_found", message: `No conversation with id "${id}"` },
+    });
+  }
+  if (!conversation.session_id) {
+    return json(200, { messages: [] });
+  }
+  const messages = await readTranscript({
+    cwd: conversation.worktree_path,
+    sessionId: conversation.session_id,
+  });
+  return json(200, { messages });
+}
+
+async function handleSendConversationMessage(
+  id: string,
+  req: Request,
+  ctx: ApiContext,
+): Promise<Response> {
+  const body = await readJson(req);
+  if (!isPlainObject(body) || typeof body.text !== "string") {
+    return json(400, {
+      error: { code: "invalid_body", message: "Body must be { text: string }" },
+    });
+  }
+  const conversation = getConversation(ctx.db, id);
+  if (!conversation) {
+    return json(404, {
+      error: { code: "not_found", message: `No conversation with id "${id}"` },
+    });
+  }
+  try {
+    await ctx.sessions.send(id, body.text);
+    return json(202, { ok: true });
+  } catch (err) {
+    if (err instanceof SessionStartError) {
+      const status = err.code === "worktree_in_use" ? 409 : 400;
+      return json(status, { error: { code: err.code, message: err.message } });
+    }
+    throw err;
+  }
+}
+
 export async function handleApi(req: Request, ctx: ApiContext): Promise<Response | null> {
   const url = new URL(req.url);
   if (!url.pathname.startsWith("/api/")) return null;
@@ -128,6 +199,30 @@ export async function handleApi(req: Request, ctx: ApiContext): Promise<Response
   const conversationsProjectId = projectConversationsMatch(url.pathname);
   if (conversationsProjectId) {
     if (req.method === "GET") return handleListProjectConversations(conversationsProjectId, ctx);
+    return json(405, {
+      error: {
+        code: "method_not_allowed",
+        message: `Method ${req.method} not allowed on ${url.pathname}`,
+      },
+    });
+  }
+
+  const conversationMessagesId = conversationMessagesMatch(url.pathname);
+  if (conversationMessagesId) {
+    if (req.method === "GET") return handleGetConversationMessages(conversationMessagesId, ctx);
+    if (req.method === "POST")
+      return handleSendConversationMessage(conversationMessagesId, req, ctx);
+    return json(405, {
+      error: {
+        code: "method_not_allowed",
+        message: `Method ${req.method} not allowed on ${url.pathname}`,
+      },
+    });
+  }
+
+  const conversationId = conversationByIdMatch(url.pathname);
+  if (conversationId) {
+    if (req.method === "GET") return handleGetConversation(conversationId, ctx);
     return json(405, {
       error: {
         code: "method_not_allowed",

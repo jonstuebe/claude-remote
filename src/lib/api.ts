@@ -91,3 +91,41 @@ export async function listConversations(projectId: string): Promise<Conversation
   const data = await unwrap<{ conversations: Conversation[] }>(res);
   return data.conversations;
 }
+
+export type AssistantBlock =
+  | { type: "text"; text: string }
+  | { type: "thinking"; text: string }
+  | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> };
+
+export type TranscriptMessage =
+  | { kind: "user_message"; uuid: string; ts: string; text: string }
+  | { kind: "assistant_message"; uuid: string; ts: string; blocks: AssistantBlock[] }
+  | {
+      kind: "tool_result";
+      uuid: string;
+      ts: string;
+      tool_use_id: string;
+      content: string;
+      is_error: boolean;
+    }
+  | { kind: "system"; uuid: string; ts: string; subtype: string; text: string };
+
+export async function getConversation(id: string): Promise<Conversation> {
+  const res = await fetch(`/api/conversations/${encodeURIComponent(id)}`);
+  return unwrap<Conversation>(res);
+}
+
+export async function getConversationMessages(id: string): Promise<TranscriptMessage[]> {
+  const res = await fetch(`/api/conversations/${encodeURIComponent(id)}/messages`);
+  const data = await unwrap<{ messages: TranscriptMessage[] }>(res);
+  return data.messages;
+}
+
+export async function sendConversationMessage(id: string, text: string): Promise<void> {
+  const res = await fetch(`/api/conversations/${encodeURIComponent(id)}/messages`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  await unwrap<{ ok: true }>(res);
+}
