@@ -125,27 +125,33 @@ function ConversationCard({ conversation }: { conversation: Conversation }) {
   return (
     <li
       className={cn(
-        "flex items-start justify-between gap-3 rounded-2xl border bg-card p-4",
+        "rounded-2xl border bg-card transition hover:border-border",
         conversation.is_default ? "border-primary/40" : "border-border/60",
       )}
     >
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          {conversation.is_default && (
-            <Pin className="size-3.5 shrink-0 text-primary" aria-label="Default conversation" />
-          )}
-          <h3 className="truncate text-base font-semibold">{conversation.title}</h3>
+      <Link
+        to="/conversations/$conversationId"
+        params={{ conversationId: conversation.id }}
+        className="flex items-start justify-between gap-3 p-4"
+      >
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            {conversation.is_default && (
+              <Pin className="size-3.5 shrink-0 text-primary" aria-label="Default conversation" />
+            )}
+            <h3 className="truncate text-base font-semibold">{conversation.title}</h3>
+          </div>
+          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-muted-foreground">
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-muted px-2 py-0.5">
+              <GitBranch className="size-3" aria-hidden />
+              <span className="font-mono">{conversation.branch}</span>
+            </span>
+            <time dateTime={conversation.last_active_at}>
+              {formatRelativeTime(conversation.last_active_at)}
+            </time>
+          </div>
         </div>
-        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-muted-foreground">
-          <span className="inline-flex items-center gap-1.5 rounded-full bg-muted px-2 py-0.5">
-            <GitBranch className="size-3" aria-hidden />
-            <span className="font-mono">{conversation.branch}</span>
-          </span>
-          <time dateTime={conversation.last_active_at}>
-            {formatRelativeTime(conversation.last_active_at)}
-          </time>
-        </div>
-      </div>
+      </Link>
     </li>
   );
 }
