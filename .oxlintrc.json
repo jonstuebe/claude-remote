@@ -15,6 +15,9 @@
     ".output",
     ".nitro",
     ".tanstack",
+    ".agents",
+    ".claude",
+    ".cursor",
     "dist",
     "src/routeTree.gen.ts"
   ]
