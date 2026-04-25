@@ -11,6 +11,11 @@
       "sourceType": "github",
       "computedHash": "784f0dbb7403b0f00324bce9a112f715342777a0daee7bbb7385f9c6f0a170ea"
     },
+    "impeccable": {
+      "source": "pbakaus/impeccable",
+      "sourceType": "github",
+      "computedHash": "bd24f9b2f67dfdac55f76a85877ce302fe75d6204d2b329d3d05342904abf336"
+    },
     "tdd": {
       "source": "mattpocock/skills",
       "sourceType": "github",
