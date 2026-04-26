@@ -5,11 +5,13 @@ import {
   GitBranch,
   Loader2,
   SendHorizonal,
+  Square,
   SquareTerminal,
   Wifi,
   WifiOff,
 } from "lucide-react";
 import { cn } from "../lib/cn";
+import { DotsLoader } from "../components/loader";
 import { Markdown } from "../components/markdown";
 import {
   PromptInput,
@@ -61,7 +63,7 @@ function ConversationRoute() {
   const [draft, setDraft] = useState("");
   const [slashCommands, setSlashCommands] = useState<SlashCommand[]>([]);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
-  const [sending, setSending] = useState(false);
+  const [agentBusy, setAgentBusy] = useState(false);
   const [inputLocked, setInputLocked] = useState(false);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
   const wsRef = useRef<ConversationWs | null>(null);
@@ -136,7 +138,10 @@ function ConversationRoute() {
 
     function handleWsEvent(event: WsServerEvent): void {
       if (event.kind === "ready" || event.kind === "session_init" || event.kind === "pong") return;
-      if (event.kind === "session_end") return;
+      if (event.kind === "session_end") {
+        setAgentBusy(false);
+        return;
+      }
       if (event.kind === "conversation_meta_updated") {
         setLoad((prev) =>
           prev.kind === "ok" && prev.conversation.id === event.conversation.id
@@ -151,6 +156,7 @@ function ConversationRoute() {
       }
       if (event.kind === "error") {
         setErrorBanner(event.message);
+        setAgentBusy(false);
         return;
       }
       if (
@@ -189,16 +195,18 @@ function ConversationRoute() {
 
   const handleSend = useCallback(async () => {
     const text = draft.trim();
-    if (text.length === 0 || sending || inputLocked) return;
-    setSending(true);
+    if (text.length === 0 || agentBusy || inputLocked) return;
     setErrorBanner(null);
-    try {
-      const serverHandled = parseServerHandled(text);
-      if (serverHandled) {
-        if (!serverHandled.ok) {
-          setErrorBanner(serverHandled.error);
-          return;
-        }
+
+    // Slash commands handled entirely client/server-side (rename, color, etc.)
+    // never invoke the agent — keep agentBusy false for those.
+    const serverHandled = parseServerHandled(text);
+    if (serverHandled) {
+      if (!serverHandled.ok) {
+        setErrorBanner(serverHandled.error);
+        return;
+      }
+      try {
         const input =
           serverHandled.action.kind === "rename"
             ? { title: serverHandled.action.title }
@@ -206,9 +214,14 @@ function ConversationRoute() {
         const conversation = await updateConversation(conversationId, input);
         setLoad({ kind: "ok", conversation });
         setDraft("");
-        return;
+      } catch (err) {
+        setErrorBanner(err instanceof Error ? err.message : "Update failed");
       }
+      return;
+    }
 
+    setAgentBusy(true);
+    try {
       await sendConversationMessage(conversationId, text);
       const optimistic: TranscriptMessage = {
         kind: "user_message",
@@ -231,15 +244,22 @@ function ConversationRoute() {
           return;
         } catch (retryErr) {
           setErrorBanner(retryErr instanceof Error ? retryErr.message : "Send failed");
+          setAgentBusy(false);
           return;
         }
       }
-      const message = err instanceof Error ? err.message : "Send failed";
-      setErrorBanner(message);
-    } finally {
-      setSending(false);
+      setErrorBanner(err instanceof Error ? err.message : "Send failed");
+      setAgentBusy(false);
     }
-  }, [conversationId, draft, inputLocked, sending]);
+    // agentBusy stays true until the WS reports session_end (or an error).
+  }, [conversationId, draft, inputLocked, agentBusy]);
+
+  const handleStop = useCallback(() => {
+    wsRef.current?.stop();
+    // Optimistically clear so the button flips back; if more events arrive
+    // they'll reset it as expected.
+    setAgentBusy(false);
+  }, []);
 
   const handlePermissionDecision = useCallback(
     (id: string, decision: "allow" | "deny" | "allow_for_session") => {
@@ -344,6 +364,13 @@ function ConversationRoute() {
                     onPermissionDecision={handlePermissionDecision}
                   />
                 ))}
+                {agentBusy && messages[messages.length - 1]?.kind === "user_message" && (
+                  <li className="flex justify-start">
+                    <div className="rounded-2xl rounded-bl-md bg-muted px-4 py-3 text-muted-foreground">
+                      <DotsLoader size="md" />
+                    </div>
+                  </li>
+                )}
               </ul>
             )}
           </div>
@@ -352,7 +379,8 @@ function ConversationRoute() {
             value={draft}
             onChange={setDraft}
             onSend={handleSend}
-            sending={sending}
+            onStop={handleStop}
+            agentBusy={agentBusy}
             disabled={connState !== "open" || inputLocked}
             locked={inputLocked}
             suggestions={slashSuggestions(draft, slashCommands)}
@@ -548,7 +576,8 @@ function Composer({
   value,
   onChange,
   onSend,
-  sending,
+  onStop,
+  agentBusy,
   disabled,
   locked,
   suggestions,
@@ -559,7 +588,8 @@ function Composer({
   value: string;
   onChange: (text: string) => void;
   onSend: () => void;
-  sending: boolean;
+  onStop: () => void;
+  agentBusy: boolean;
   disabled: boolean;
   locked: boolean;
   suggestions: SlashCommand[];
@@ -570,7 +600,7 @@ function Composer({
   const showSlash = suggestions.length > 0;
   const showAgents = !showSlash && agentMatches.length > 0;
   const isTouch = useIsTouch();
-  const sendDisabled = sending || value.trim().length === 0 || disabled || locked;
+  const sendDisabled = agentBusy || value.trim().length === 0 || disabled || locked;
   return (
     <div className="relative mt-3">
       {showSlash && (
@@ -625,9 +655,13 @@ function Composer({
         value={value}
         onValueChange={onChange}
         onSubmit={() => {
+          if (agentBusy) {
+            onStop();
+            return;
+          }
           if (!sendDisabled) onSend();
         }}
-        isLoading={sending}
+        isLoading={agentBusy}
         disabled={locked}
       >
         <PromptInputTextarea
@@ -635,21 +669,30 @@ function Composer({
           disableSubmitOnEnter={isTouch}
         />
         <PromptInputActions className="justify-end pt-2">
-          <PromptInputAction tooltip={sending ? "Sending…" : "Send message"}>
-            <button
-              type="button"
-              onClick={onSend}
-              disabled={sendDisabled}
-              aria-label="Send message"
-              className="inline-flex size-9 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {sending ? (
-                <Loader2 className="size-4 animate-spin" aria-hidden />
-              ) : (
+          {agentBusy ? (
+            <PromptInputAction tooltip="Stop">
+              <button
+                type="button"
+                onClick={onStop}
+                aria-label="Stop"
+                className="inline-flex size-9 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition hover:opacity-90"
+              >
+                <Square className="size-3.5 fill-current" aria-hidden />
+              </button>
+            </PromptInputAction>
+          ) : (
+            <PromptInputAction tooltip="Send message">
+              <button
+                type="button"
+                onClick={onSend}
+                disabled={sendDisabled}
+                aria-label="Send message"
+                className="inline-flex size-9 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+              >
                 <SendHorizonal className="size-4" aria-hidden />
-              )}
-            </button>
-          </PromptInputAction>
+              </button>
+            </PromptInputAction>
+          )}
         </PromptInputActions>
       </PromptInput>
     </div>

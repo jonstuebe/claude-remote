@@ -47,6 +47,7 @@ export type ConversationWsHandlers = {
 export type ConversationWs = {
   send(text: string): void;
   decidePermission(id: string, decision: "allow" | "deny" | "allow_for_session"): void;
+  stop(): void;
   close(): void;
 };
 
@@ -127,6 +128,11 @@ export function connectConversationWs(
     decidePermission(id, decision): void {
       if (socket && socket.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify({ kind: "permission_decision", id, decision }));
+      }
+    },
+    stop(): void {
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ kind: "stop" }));
       }
     },
     close(): void {
