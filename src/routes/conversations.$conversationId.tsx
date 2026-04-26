@@ -258,7 +258,7 @@ function ConversationRoute() {
   }, [conversationId]);
 
   return (
-    <main className="mx-auto flex h-dvh max-w-3xl flex-col px-5 py-4">
+    <main className="flex h-dvh flex-col px-5 py-4">
       <header className="mb-3 flex items-center justify-between gap-3">
         {load.kind === "ok" ? (
           <Link

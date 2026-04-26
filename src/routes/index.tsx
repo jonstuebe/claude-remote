@@ -52,7 +52,7 @@ function ProjectListRoute() {
   }, []);
 
   return (
-    <main className="mx-auto flex min-h-dvh max-w-screen-md flex-col px-5 py-6">
+    <main className="flex min-h-dvh flex-col px-5 py-6">
       <header className="mb-6 flex items-center justify-between gap-3">
         <h1 className="text-2xl font-semibold tracking-tight">Projects</h1>
         <button

@@ -80,7 +80,7 @@ function ProjectDetailRoute() {
   if (isSubpage) return <Outlet />;
 
   return (
-    <main className="mx-auto flex min-h-dvh max-w-3xl flex-col px-5 py-6">
+    <main className="flex min-h-dvh flex-col px-5 py-6">
       <Link
         to="/"
         className="mb-4 inline-flex items-center gap-1 self-start text-sm text-muted-foreground transition hover:text-foreground"

@@ -35,7 +35,7 @@ function AgentsRoute() {
   }, [refresh]);
 
   return (
-    <main className="mx-auto flex min-h-dvh max-w-3xl flex-col px-5 py-6">
+    <main className="flex min-h-dvh flex-col px-5 py-6">
       <Link
         to="/projects/$projectId"
         params={{ projectId }}
