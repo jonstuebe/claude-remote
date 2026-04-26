@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { cn } from "../lib/cn";
 import { Markdown } from "../components/markdown";
+import { useIsTouch } from "../hooks/use-is-touch";
 import {
   ApiRequestError,
   getConversation,
@@ -582,6 +583,7 @@ function Composer({
 }) {
   const showSlash = suggestions.length > 0;
   const showAgents = !showSlash && agentMatches.length > 0;
+  const isTouch = useIsTouch();
   return (
     <form
       className="relative mt-3 flex items-end gap-2"
@@ -642,10 +644,16 @@ function Composer({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-            e.preventDefault();
-            onSend();
-          }
+          if (e.key !== "Enter") return;
+          // Let IME composition (e.g. CJK input) finish without submitting.
+          if (e.nativeEvent.isComposing) return;
+          // Shift+Enter inserts a newline (default textarea behavior).
+          if (e.shiftKey) return;
+          // On touch devices, Enter always inserts a newline — the user must
+          // tap the Send button to submit (matches every mobile chat app).
+          if (isTouch) return;
+          e.preventDefault();
+          onSend();
         }}
         rows={2}
         disabled={locked}
