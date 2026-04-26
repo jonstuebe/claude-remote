@@ -17,6 +17,7 @@ import {
   PromptInputActions,
   PromptInputTextarea,
 } from "../components/prompt-input";
+import { Tool, type ToolPart } from "../components/tool";
 import { useIsTouch } from "../hooks/use-is-touch";
 import {
   ApiRequestError,
@@ -67,7 +68,6 @@ function ConversationRoute() {
   const seenUuids = useRef<Set<string>>(new Set());
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const toolResults = useMemo(() => buildToolResultMap(messages), [messages]);
-  const diffToolIds = useMemo(() => buildDiffToolIds(messages), [messages]);
 
   useEffect(() => {
     let cancelled = false;
@@ -341,7 +341,6 @@ function ConversationRoute() {
                     key={messageKey(m)}
                     message={m}
                     toolResults={toolResults}
-                    diffToolIds={diffToolIds}
                     onPermissionDecision={handlePermissionDecision}
                   />
                 ))}
@@ -412,12 +411,10 @@ function messageKey(message: TranscriptMessage): string {
 function MessageItem({
   message,
   toolResults,
-  diffToolIds,
   onPermissionDecision,
 }: {
   message: TranscriptMessage;
   toolResults: Map<string, Extract<TranscriptMessage, { kind: "tool_result" }>>;
-  diffToolIds: Set<string>;
   onPermissionDecision: (id: string, decision: "allow" | "deny" | "allow_for_session") => void;
 }) {
   if (message.kind === "user_message") {
@@ -441,26 +438,9 @@ function MessageItem({
     );
   }
   if (message.kind === "tool_result") {
-    if (diffToolIds.has(message.tool_use_id)) return null;
-    return (
-      <li className="flex justify-start">
-        <div
-          className={cn(
-            "max-w-[85%] rounded-lg border px-3 py-1.5 font-mono text-xs",
-            message.is_error
-              ? "border-destructive/40 bg-destructive/5 text-destructive"
-              : "border-border/60 bg-background/40 text-muted-foreground",
-          )}
-        >
-          <div className="mb-1 text-[10px] uppercase tracking-wide opacity-70">
-            tool result · {message.tool_use_id.slice(0, 8)}
-          </div>
-          <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap wrap-break-word">
-            {truncate(message.content, 1200)}
-          </pre>
-        </div>
-      </li>
-    );
+    // Tool results are rendered inline within their matching tool_use card
+    // (see AssistantBlockView -> <Tool>), or by ToolDiff for diff-style tools.
+    return null;
   }
   if (message.kind === "system" && message.text.length > 0) {
     return (
@@ -552,16 +532,16 @@ function AssistantBlockView({
   if (isDiffToolBlock(block)) {
     return <ToolDiff block={block} result={toolResults.get(block.id)} />;
   }
-  return (
-    <div className="rounded-md bg-background/40 px-2 py-1.5 font-mono text-xs">
-      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
-        tool · {block.name}
-      </div>
-      <pre className="mt-1 whitespace-pre-wrap wrap-break-word text-muted-foreground">
-        {truncate(JSON.stringify(block.input, null, 2), 400)}
-      </pre>
-    </div>
-  );
+  const result = toolResults.get(block.id);
+  const toolPart: ToolPart = {
+    type: block.name,
+    state: result ? (result.is_error ? "output-error" : "output-available") : "input-available",
+    input: block.input,
+    output: result ? truncate(result.content, 4000) : undefined,
+    toolCallId: block.id,
+    errorText: result?.is_error ? truncate(result.content, 4000) : undefined,
+  };
+  return <Tool toolPart={toolPart} />;
 }
 
 function Composer({
@@ -714,17 +694,6 @@ function buildToolResultMap(
     if (message.kind === "tool_result") results.set(message.tool_use_id, message);
   }
   return results;
-}
-
-function buildDiffToolIds(messages: TranscriptMessage[]): Set<string> {
-  const ids = new Set<string>();
-  for (const message of messages) {
-    if (message.kind !== "assistant_message") continue;
-    for (const block of message.blocks) {
-      if (block.type === "tool_use" && isDiffToolBlock(block)) ids.add(block.id);
-    }
-  }
-  return ids;
 }
 
 function truncate(text: string, max: number): string {
