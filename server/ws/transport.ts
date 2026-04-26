@@ -44,6 +44,10 @@ export function attachWebSocket(
   for (const event of manager.bufferedEvents(conversationId)) {
     send(event);
   }
+  // Replay the persisted token-usage snapshot so the "context used" indicator
+  // appears immediately on page reload, before the next assistant turn arrives.
+  const lastUsage = manager.getLatestUsage(conversationId);
+  if (lastUsage) send(lastUsage);
   send({ kind: "ready", conversation_id: conversationId });
 
   const heartbeat = setInterval(() => {

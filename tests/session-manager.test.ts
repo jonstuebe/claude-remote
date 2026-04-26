@@ -447,6 +447,82 @@ describe("SessionManager", () => {
     expect(consumed).toEqual(["alpha", "beta"]);
   });
 
+  test("emits usage_updated alongside assistant messages and persists the snapshot", async () => {
+    const conversation = await makeConversation("usage");
+    const tracker = new SpawnerTracker();
+    const manager = new SessionManager({
+      db,
+      spawner: tracker.spawner,
+      isPidAlive: () => true,
+      hostPid: 1000,
+    });
+
+    const events: SessionEvent[] = [];
+    manager.subscribe(conversation.id, (e) => events.push(e));
+
+    const promise = manager.start(conversation.id);
+    tracker.latest().emit(initMessage("sdk-usage"));
+    await promise;
+
+    tracker.latest().emit({
+      type: "assistant",
+      uuid: "assist-1",
+      session_id: "sdk-usage",
+      message: {
+        content: [{ type: "text", text: "ok" }],
+        model: "claude-sonnet-4-5",
+        usage: {
+          input_tokens: 1234,
+          output_tokens: 56,
+          cache_creation_input_tokens: 200,
+          cache_read_input_tokens: 7800,
+        },
+      },
+    });
+
+    // Drain the microtask queue so the manager's reader loop processes the
+    // emitted message before we assert.
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+
+    const usageEvent = events.find((e) => e.kind === "usage_updated");
+    expect(usageEvent).toMatchObject({
+      kind: "usage_updated",
+      input_tokens: 1234,
+      output_tokens: 56,
+      cache_creation_input_tokens: 200,
+      cache_read_input_tokens: 7800,
+      model: "claude-sonnet-4-5",
+    });
+
+    // Persisted snapshot survives a fresh subscriber (i.e. page reload).
+    const replayed = manager.getLatestUsage(conversation.id);
+    expect(replayed).toMatchObject({
+      kind: "usage_updated",
+      input_tokens: 1234,
+      cache_read_input_tokens: 7800,
+      model: "claude-sonnet-4-5",
+    });
+  });
+
+  test("getLatestUsage returns null before any assistant turn has run", async () => {
+    const conversation = await makeConversation("no-usage-yet");
+    const tracker = new SpawnerTracker();
+    const manager = new SessionManager({
+      db,
+      spawner: tracker.spawner,
+      isPidAlive: () => true,
+      hostPid: 1000,
+    });
+
+    expect(manager.getLatestUsage(conversation.id)).toBeNull();
+
+    const promise = manager.start(conversation.id);
+    tracker.latest().emit(initMessage("sdk-noop"));
+    await promise;
+
+    expect(manager.getLatestUsage(conversation.id)).toBeNull();
+  });
+
   test("stop closes input, aborts spawn, deletes ledger row, emits session_end", async () => {
     const conversation = await makeConversation("stop");
     const tracker = new SpawnerTracker();

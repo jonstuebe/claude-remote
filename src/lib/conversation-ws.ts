@@ -32,10 +32,21 @@ export type WsServerEvent =
     }
   | { kind: "conversation_meta_updated"; conversation: Conversation }
   | { kind: "conversation_deleted"; conversation_id: string }
+  | {
+      kind: "usage_updated";
+      input_tokens: number;
+      output_tokens: number;
+      cache_creation_input_tokens: number;
+      cache_read_input_tokens: number;
+      model: string | null;
+      ts: string;
+    }
   | { kind: "error"; message: string }
   | { kind: "session_end"; reason: string }
   | { kind: "ping" }
   | { kind: "pong" };
+
+export type ConversationUsage = Extract<WsServerEvent, { kind: "usage_updated" }>;
 
 export type ConnectionState = "connecting" | "open" | "closed";
 

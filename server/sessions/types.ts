@@ -6,6 +6,15 @@ import type {
   PermissionRiskLevel,
 } from "../permissions/broker.ts";
 
+export type UsageSnapshot = {
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_input_tokens: number;
+  cache_read_input_tokens: number;
+  model: string | null;
+  ts: string;
+};
+
 export type SessionEvent =
   | { kind: "session_init"; sdk_session_id: string }
   | { kind: "user_message"; uuid: string; ts: string; text: string }
@@ -34,6 +43,7 @@ export type SessionEvent =
       decision: PermissionDecision;
       input_locked: boolean;
     }
+  | ({ kind: "usage_updated" } & UsageSnapshot)
   | { kind: "error"; message: string }
   | { kind: "session_end"; reason: string };
 
@@ -43,6 +53,14 @@ export type SpawnInputMessage = {
 };
 
 export type SpawnInput = AsyncIterable<SpawnInputMessage>;
+
+export type SDKAssistantUsage = {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_creation_input_tokens?: number | null;
+  cache_read_input_tokens?: number | null;
+  [key: string]: unknown;
+};
 
 export type SpawnedSDKMessage =
   | {
@@ -64,7 +82,7 @@ export type SpawnedSDKMessage =
       type: "assistant";
       uuid: string;
       session_id: string;
-      message: { content: unknown };
+      message: { content: unknown; model?: string; usage?: SDKAssistantUsage };
       [key: string]: unknown;
     }
   | {

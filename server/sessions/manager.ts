@@ -3,6 +3,7 @@ import type { AssistantBlock } from "../transcript/reader.ts";
 import { InputStream } from "./input-stream.ts";
 import type {
   Listener,
+  SDKAssistantUsage,
   SessionEvent,
   SpawnedSDKMessage,
   Spawner,
@@ -335,6 +336,11 @@ export class SessionManager {
 
           const event = normalizeMessage(message);
           if (event) this.broadcast(conversationId, event);
+          const usageEvent = extractUsageEvent(message);
+          if (usageEvent) {
+            this.persistUsage(conversationId, usageEvent);
+            this.broadcast(conversationId, usageEvent);
+          }
         }
         this.cleanup(conversationId, "ended");
       } catch (err) {
@@ -403,6 +409,73 @@ export class SessionManager {
     const transcript = sessions.find((session) => session.session_id === conversation.session_id);
     if (!transcript) return false;
     return Date.now() - transcript.mtimeMs < TAKEOVER_WINDOW_MS;
+  }
+
+  getLatestUsage(conversationId: string): SessionEvent | null {
+    type Row = {
+      input_tokens: number;
+      output_tokens: number;
+      cache_creation_tokens: number;
+      cache_read_tokens: number;
+      model: string | null;
+      ts: string | null;
+    };
+    const row = this.db
+      .prepare<Row, [string]>(
+        `SELECT
+           last_usage_input_tokens AS input_tokens,
+           last_usage_output_tokens AS output_tokens,
+           last_usage_cache_creation_tokens AS cache_creation_tokens,
+           last_usage_cache_read_tokens AS cache_read_tokens,
+           last_usage_model AS model,
+           last_usage_at AS ts
+         FROM conversations
+         WHERE id = ?`,
+      )
+      .get(conversationId);
+    if (!row || !row.ts) return null;
+    if (
+      row.input_tokens === 0 &&
+      row.output_tokens === 0 &&
+      row.cache_creation_tokens === 0 &&
+      row.cache_read_tokens === 0
+    ) {
+      return null;
+    }
+    return {
+      kind: "usage_updated",
+      input_tokens: row.input_tokens,
+      output_tokens: row.output_tokens,
+      cache_creation_input_tokens: row.cache_creation_tokens,
+      cache_read_input_tokens: row.cache_read_tokens,
+      model: row.model,
+      ts: row.ts,
+    };
+  }
+
+  private persistUsage(
+    conversationId: string,
+    usage: Extract<SessionEvent, { kind: "usage_updated" }>,
+  ): void {
+    this.db.run(
+      `UPDATE conversations
+       SET last_usage_input_tokens = ?,
+           last_usage_output_tokens = ?,
+           last_usage_cache_creation_tokens = ?,
+           last_usage_cache_read_tokens = ?,
+           last_usage_model = ?,
+           last_usage_at = ?
+       WHERE id = ?`,
+      [
+        usage.input_tokens,
+        usage.output_tokens,
+        usage.cache_creation_input_tokens,
+        usage.cache_read_input_tokens,
+        usage.model,
+        usage.ts,
+        conversationId,
+      ],
+    );
   }
 
   private hasRecordedSession(conversationId: string): boolean {
@@ -487,4 +560,34 @@ function normalizeMessage(message: SpawnedSDKMessage): SessionEvent | null {
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function extractUsageEvent(
+  message: SpawnedSDKMessage,
+): Extract<SessionEvent, { kind: "usage_updated" }> | null {
+  if (message.type !== "assistant") return null;
+  const usage: SDKAssistantUsage | undefined = message.message.usage;
+  if (!usage) return null;
+  // The SDK forwards Anthropic's usage shape, where the cache fields are nullable
+  // but `input_tokens` / `output_tokens` are always present. Coerce nulls to 0
+  // so the downstream math is straightforward.
+  const inputTokens = typeof usage.input_tokens === "number" ? usage.input_tokens : 0;
+  const outputTokens = typeof usage.output_tokens === "number" ? usage.output_tokens : 0;
+  const cacheCreation =
+    typeof usage.cache_creation_input_tokens === "number" ? usage.cache_creation_input_tokens : 0;
+  const cacheRead =
+    typeof usage.cache_read_input_tokens === "number" ? usage.cache_read_input_tokens : 0;
+  if (inputTokens === 0 && outputTokens === 0 && cacheCreation === 0 && cacheRead === 0) {
+    return null;
+  }
+  const model = typeof message.message.model === "string" ? message.message.model : null;
+  return {
+    kind: "usage_updated",
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    cache_creation_input_tokens: cacheCreation,
+    cache_read_input_tokens: cacheRead,
+    model,
+    ts: new Date().toISOString(),
+  };
 }

@@ -39,6 +39,7 @@ import {
 import {
   connectConversationWs,
   type ConnectionState,
+  type ConversationUsage,
   type ConversationWs,
   type WsServerEvent,
 } from "../lib/conversation-ws";
@@ -66,6 +67,7 @@ function ConversationRoute() {
   const [agentBusy, setAgentBusy] = useState(false);
   const [inputLocked, setInputLocked] = useState(false);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
+  const [usage, setUsage] = useState<ConversationUsage | null>(null);
   const wsRef = useRef<ConversationWs | null>(null);
   const seenUuids = useRef<Set<string>>(new Set());
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -152,6 +154,10 @@ function ConversationRoute() {
       }
       if (event.kind === "conversation_deleted" && event.conversation_id === conversationId) {
         setLoad({ kind: "not_found" });
+        return;
+      }
+      if (event.kind === "usage_updated") {
+        setUsage(event);
         return;
       }
       if (event.kind === "error") {
@@ -383,6 +389,7 @@ function ConversationRoute() {
             agentBusy={agentBusy}
             disabled={connState !== "open" || inputLocked}
             locked={inputLocked}
+            usage={usage}
             suggestions={slashSuggestions(draft, slashCommands)}
             agentMatches={agentSuggestions(draft, agents)}
             onSuggestionSelect={(command) => {
@@ -580,6 +587,7 @@ function Composer({
   agentBusy,
   disabled,
   locked,
+  usage,
   suggestions,
   agentMatches,
   onSuggestionSelect,
@@ -592,6 +600,7 @@ function Composer({
   agentBusy: boolean;
   disabled: boolean;
   locked: boolean;
+  usage: ConversationUsage | null;
   suggestions: SlashCommand[];
   agentMatches: AgentInfo[];
   onSuggestionSelect: (command: SlashCommand) => void;
@@ -601,6 +610,7 @@ function Composer({
   const showAgents = !showSlash && agentMatches.length > 0;
   const isTouch = useIsTouch();
   const sendDisabled = agentBusy || value.trim().length === 0 || disabled || locked;
+  const contextUsage = useMemo(() => computeContextUsage(usage), [usage]);
   return (
     <div className="relative mt-3">
       {showSlash && (
@@ -668,7 +678,50 @@ function Composer({
           placeholder={locked ? "Answer the permission request to continue…" : "Send a message…"}
           disableSubmitOnEnter={isTouch}
         />
-        <PromptInputActions className="justify-end pt-2">
+        <PromptInputActions className="justify-between pt-2">
+          {contextUsage ? (
+            <PromptInputAction
+              side="top"
+              tooltip={
+                <div className="flex flex-col gap-0.5">
+                  <span className="font-medium">Context used</span>
+                  <span>
+                    {contextUsage.totalInputTokens.toLocaleString()} /{" "}
+                    {contextUsage.windowTokens.toLocaleString()} tokens
+                  </span>
+                  <span className="text-muted-foreground">
+                    input {contextUsage.inputTokens.toLocaleString()}
+                    {contextUsage.cacheReadTokens > 0
+                      ? ` · cache read ${contextUsage.cacheReadTokens.toLocaleString()}`
+                      : ""}
+                    {contextUsage.cacheCreationTokens > 0
+                      ? ` · cache write ${contextUsage.cacheCreationTokens.toLocaleString()}`
+                      : ""}
+                  </span>
+                  {contextUsage.model && (
+                    <span className="text-muted-foreground">{contextUsage.model}</span>
+                  )}
+                </div>
+              }
+            >
+              <button
+                type="button"
+                aria-label={`Context used: ${contextUsage.percentLabel} of context window`}
+                className={cn(
+                  "inline-flex h-9 shrink-0 items-center rounded-full border border-border/60 bg-background px-3 text-xs font-medium tabular-nums transition hover:bg-muted",
+                  contextUsage.tone === "danger"
+                    ? "text-destructive"
+                    : contextUsage.tone === "warn"
+                      ? "text-orange-500"
+                      : "text-muted-foreground",
+                )}
+              >
+                {contextUsage.percentLabel}
+              </button>
+            </PromptInputAction>
+          ) : (
+            <span aria-hidden />
+          )}
           {agentBusy ? (
             <PromptInputAction tooltip="Stop">
               <button
@@ -742,4 +795,61 @@ function buildToolResultMap(
 function truncate(text: string, max: number): string {
   if (text.length <= max) return text;
   return `${text.slice(0, max)}\n…(truncated ${text.length - max} chars)`;
+}
+
+type ContextUsageView = {
+  inputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  totalInputTokens: number;
+  windowTokens: number;
+  percent: number;
+  percentLabel: string;
+  tone: "default" | "warn" | "danger";
+  model: string | null;
+};
+
+// All currently-shipping Claude models share a 200k token context window.
+// (The 1M window for Sonnet requires the `context-1m-2025-08-07` beta header,
+// which the Agent SDK doesn't enable by default — so 200k is the right
+// denominator for the indicator.)
+const DEFAULT_CONTEXT_WINDOW_TOKENS = 200_000;
+
+const CONTEXT_WINDOW_BY_MODEL_PREFIX: Array<[string, number]> = [
+  // Reserved for future overrides (e.g. fast-mode/extended-context models).
+];
+
+function contextWindowForModel(model: string | null): number {
+  if (!model) return DEFAULT_CONTEXT_WINDOW_TOKENS;
+  for (const [prefix, size] of CONTEXT_WINDOW_BY_MODEL_PREFIX) {
+    if (model.startsWith(prefix)) return size;
+  }
+  return DEFAULT_CONTEXT_WINDOW_TOKENS;
+}
+
+function computeContextUsage(usage: ConversationUsage | null): ContextUsageView | null {
+  if (!usage) return null;
+  // Anthropic's billing rule: total prompt size is input + cache_creation + cache_read.
+  // That's what we compare against the model's context window.
+  const totalInput =
+    usage.input_tokens + usage.cache_creation_input_tokens + usage.cache_read_input_tokens;
+  if (totalInput <= 0) return null;
+  const windowTokens = contextWindowForModel(usage.model);
+  const ratio = totalInput / windowTokens;
+  const percent = Math.min(999, Math.max(0, ratio * 100));
+  const tone: ContextUsageView["tone"] = percent >= 90 ? "danger" : percent >= 75 ? "warn" : "default";
+  // Show whole-number percent until we approach zero, where a single decimal
+  // place keeps the indicator from flat-lining at "0%" early in a session.
+  const percentLabel = percent < 1 ? `${percent.toFixed(1)}%` : `${Math.round(percent)}%`;
+  return {
+    inputTokens: usage.input_tokens,
+    cacheReadTokens: usage.cache_read_input_tokens,
+    cacheCreationTokens: usage.cache_creation_input_tokens,
+    totalInputTokens: totalInput,
+    windowTokens,
+    percent,
+    percentLabel,
+    tone,
+    model: usage.model,
+  };
 }
