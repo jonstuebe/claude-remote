@@ -11,6 +11,12 @@ import {
 } from "lucide-react";
 import { cn } from "../lib/cn";
 import { Markdown } from "../components/markdown";
+import {
+  PromptInput,
+  PromptInputAction,
+  PromptInputActions,
+  PromptInputTextarea,
+} from "../components/prompt-input";
 import { useIsTouch } from "../hooks/use-is-touch";
 import {
   ApiRequestError,
@@ -584,16 +590,11 @@ function Composer({
   const showSlash = suggestions.length > 0;
   const showAgents = !showSlash && agentMatches.length > 0;
   const isTouch = useIsTouch();
+  const sendDisabled = sending || value.trim().length === 0 || disabled || locked;
   return (
-    <form
-      className="relative mt-3 flex items-end gap-2"
-      onSubmit={(e) => {
-        e.preventDefault();
-        onSend();
-      }}
-    >
+    <div className="relative mt-3">
       {showSlash && (
-        <div className="absolute bottom-full left-0 right-14 mb-2 max-h-64 overflow-y-auto rounded-2xl border border-border/70 bg-popover p-2 shadow-lg">
+        <div className="absolute bottom-full left-0 right-0 mb-2 max-h-64 overflow-y-auto rounded-2xl border border-border/70 bg-popover p-2 shadow-lg">
           {suggestions.map((command) => (
             <button
               key={command.name}
@@ -619,7 +620,7 @@ function Composer({
         </div>
       )}
       {showAgents && (
-        <div className="absolute bottom-full left-0 right-14 mb-2 max-h-64 overflow-y-auto rounded-2xl border border-border/70 bg-popover p-2 shadow-lg">
+        <div className="absolute bottom-full left-0 right-0 mb-2 max-h-64 overflow-y-auto rounded-2xl border border-border/70 bg-popover p-2 shadow-lg">
           {agentMatches.map((agent) => (
             <button
               key={`${agent.source}:${agent.name}`}
@@ -640,39 +641,38 @@ function Composer({
           ))}
         </div>
       )}
-      <textarea
+      <PromptInput
         value={value}
-        onChange={(e) => onChange(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key !== "Enter") return;
-          // Let IME composition (e.g. CJK input) finish without submitting.
-          if (e.nativeEvent.isComposing) return;
-          // Shift+Enter inserts a newline (default textarea behavior).
-          if (e.shiftKey) return;
-          // On touch devices, Enter always inserts a newline — the user must
-          // tap the Send button to submit (matches every mobile chat app).
-          if (isTouch) return;
-          e.preventDefault();
-          onSend();
+        onValueChange={onChange}
+        onSubmit={() => {
+          if (!sendDisabled) onSend();
         }}
-        rows={2}
+        isLoading={sending}
         disabled={locked}
-        placeholder={locked ? "Answer the permission request to continue…" : "Send a message…"}
-        className="min-h-12 flex-1 resize-y rounded-2xl border border-input bg-background px-3 py-2 text-sm outline-none transition focus:border-ring focus:ring-2 focus:ring-ring/30"
-      />
-      <button
-        type="submit"
-        disabled={sending || value.trim().length === 0 || disabled}
-        aria-label="Send message"
-        className="inline-flex size-12 shrink-0 items-center justify-center rounded-2xl bg-primary text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
       >
-        {sending ? (
-          <Loader2 className="size-5 animate-spin" aria-hidden />
-        ) : (
-          <SendHorizonal className="size-5" aria-hidden />
-        )}
-      </button>
-    </form>
+        <PromptInputTextarea
+          placeholder={locked ? "Answer the permission request to continue…" : "Send a message…"}
+          disableSubmitOnEnter={isTouch}
+        />
+        <PromptInputActions className="justify-end pt-2">
+          <PromptInputAction tooltip={sending ? "Sending…" : "Send message"}>
+            <button
+              type="button"
+              onClick={onSend}
+              disabled={sendDisabled}
+              aria-label="Send message"
+              className="inline-flex size-9 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {sending ? (
+                <Loader2 className="size-4 animate-spin" aria-hidden />
+              ) : (
+                <SendHorizonal className="size-4" aria-hidden />
+              )}
+            </button>
+          </PromptInputAction>
+        </PromptInputActions>
+      </PromptInput>
+    </div>
   );
 }
 
