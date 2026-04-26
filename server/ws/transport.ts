@@ -5,6 +5,7 @@ import type { MetaBroadcastMessage, MetaBroadcaster } from "./meta-broadcaster.t
 
 export type WsClientMessage =
   | { kind: "user_message"; text: string }
+  | { kind: "permission_decision"; id: string; decision: "allow" | "deny" | "allow_for_session" }
   | { kind: "stop" }
   | { kind: "ping" };
 
@@ -76,6 +77,13 @@ export function parseClientMessage(raw: string | Buffer): WsClientMessage | null
   if (obj.kind === "user_message" && typeof obj.text === "string") {
     return { kind: "user_message", text: obj.text };
   }
+  if (
+    obj.kind === "permission_decision" &&
+    typeof obj.id === "string" &&
+    (obj.decision === "allow" || obj.decision === "deny" || obj.decision === "allow_for_session")
+  ) {
+    return { kind: "permission_decision", id: obj.id, decision: obj.decision };
+  }
   if (obj.kind === "stop") return { kind: "stop" };
   if (obj.kind === "ping") return { kind: "ping" };
   return null;
@@ -98,6 +106,13 @@ export async function handleClientMessage(
   }
   if (message.kind === "stop") {
     await manager.stop(conversationId);
+    return;
+  }
+  if (message.kind === "permission_decision") {
+    const ok = manager.resolvePermission(message.id, message.decision);
+    if (!ok) {
+      ws.send(JSON.stringify({ kind: "error", message: "Permission request is no longer pending" }));
+    }
     return;
   }
   if (message.kind === "ping") {

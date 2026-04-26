@@ -1,15 +1,28 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { ChevronLeft, GitBranch, Loader2, SendHorizonal, Wifi, WifiOff } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ChevronLeft,
+  GitBranch,
+  Loader2,
+  SendHorizonal,
+  SquareTerminal,
+  Wifi,
+  WifiOff,
+} from "lucide-react";
 import { cn } from "../lib/cn";
 import {
   ApiRequestError,
   getConversation,
   getConversationMessages,
+  listAgents,
+  listSlashCommands,
+  openConversationInTerminal,
   sendConversationMessage,
   updateConversation,
   type AssistantBlock,
+  type AgentInfo,
   type Conversation,
+  type SlashCommand,
   type TranscriptMessage,
 } from "../lib/api";
 import {
@@ -19,6 +32,7 @@ import {
   type WsServerEvent,
 } from "../lib/conversation-ws";
 import { COLOR_SWATCHES, isConversationColor, parseServerHandled } from "../lib/slash-commands";
+import { isDiffToolBlock, ToolDiff } from "../components/tool-diff";
 
 export const Route = createFileRoute("/conversations/$conversationId")({
   component: ConversationRoute,
@@ -36,11 +50,16 @@ function ConversationRoute() {
   const [messages, setMessages] = useState<TranscriptMessage[]>([]);
   const [connState, setConnState] = useState<ConnectionState>("connecting");
   const [draft, setDraft] = useState("");
+  const [slashCommands, setSlashCommands] = useState<SlashCommand[]>([]);
+  const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [sending, setSending] = useState(false);
+  const [inputLocked, setInputLocked] = useState(false);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
   const wsRef = useRef<ConversationWs | null>(null);
   const seenUuids = useRef<Set<string>>(new Set());
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const toolResults = useMemo(() => buildToolResultMap(messages), [messages]);
+  const diffToolIds = useMemo(() => buildDiffToolIds(messages), [messages]);
 
   useEffect(() => {
     let cancelled = false;
@@ -51,7 +70,7 @@ function ConversationRoute() {
           getConversationMessages(conversationId),
         ]);
         if (cancelled) return;
-        seenUuids.current = new Set(history.map((m) => m.uuid));
+        seenUuids.current = new Set(history.filter((m) => "uuid" in m).map((m) => m.uuid));
         setLoad({ kind: "ok", conversation });
         setMessages(history);
       } catch (err) {
@@ -70,6 +89,31 @@ function ConversationRoute() {
       cancelled = true;
     };
   }, [conversationId]);
+
+  useEffect(() => {
+    if (load.kind !== "ok") return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const [commands, agentList] = await Promise.all([
+          listSlashCommands(load.conversation.project_id),
+          listAgents(load.conversation.project_id),
+        ]);
+        if (!cancelled) {
+          setSlashCommands(commands);
+          setAgents(agentList);
+        }
+      } catch {
+        if (!cancelled) {
+          setSlashCommands([]);
+          setAgents([]);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [load]);
 
   useEffect(() => {
     const ws = connectConversationWs(conversationId, {
@@ -113,6 +157,19 @@ function ConversationRoute() {
         seenUuids.current.add(uuid);
         setMessages((prev) => [...prev, event as TranscriptMessage]);
       }
+      if (event.kind === "permission_request") {
+        setInputLocked(true);
+        setMessages((prev) => [...prev, event]);
+        return;
+      }
+      if (event.kind === "permission_decision") {
+        setInputLocked(event.input_locked);
+        setMessages((prev) =>
+          prev.map((message) =>
+            message.kind === "permission_request" && message.id === event.id ? event : message,
+          ),
+        );
+      }
     }
   }, [conversationId]);
 
@@ -124,7 +181,7 @@ function ConversationRoute() {
 
   const handleSend = useCallback(async () => {
     const text = draft.trim();
-    if (text.length === 0 || sending) return;
+    if (text.length === 0 || sending || inputLocked) return;
     setSending(true);
     setErrorBanner(null);
     try {
@@ -155,12 +212,42 @@ function ConversationRoute() {
       setMessages((prev) => [...prev, optimistic]);
       setDraft("");
     } catch (err) {
+      if (
+        err instanceof ApiRequestError &&
+        err.body.code === "takeover_required" &&
+        window.confirm(err.body.message)
+      ) {
+        try {
+          await sendConversationMessage(conversationId, text, true);
+          setDraft("");
+          return;
+        } catch (retryErr) {
+          setErrorBanner(retryErr instanceof Error ? retryErr.message : "Send failed");
+          return;
+        }
+      }
       const message = err instanceof Error ? err.message : "Send failed";
       setErrorBanner(message);
     } finally {
       setSending(false);
     }
-  }, [conversationId, draft, sending]);
+  }, [conversationId, draft, inputLocked, sending]);
+
+  const handlePermissionDecision = useCallback(
+    (id: string, decision: "allow" | "deny" | "allow_for_session") => {
+      wsRef.current?.decidePermission(id, decision);
+    },
+    [],
+  );
+
+  const handleOpenTerminal = useCallback(async () => {
+    try {
+      await openConversationInTerminal(conversationId);
+      setErrorBanner("Opened in terminal on the host machine.");
+    } catch (err) {
+      setErrorBanner(err instanceof Error ? err.message : "Failed to open terminal");
+    }
+  }, [conversationId]);
 
   return (
     <main className="mx-auto flex h-dvh max-w-3xl flex-col px-5 py-4">
@@ -203,13 +290,25 @@ function ConversationRoute() {
       {load.kind === "ok" && (
         <>
           <div className="mb-3">
-            <div className="flex items-center gap-2">
-              <ConversationColorDot conversation={load.conversation} />
-              <h1 className="truncate text-lg font-semibold">{load.conversation.title}</h1>
-            </div>
-            <div className="mt-1 inline-flex items-center gap-1.5 rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-              <GitBranch className="size-3" aria-hidden />
-              <span className="font-mono">{load.conversation.branch}</span>
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <ConversationColorDot conversation={load.conversation} />
+                  <h1 className="truncate text-lg font-semibold">{load.conversation.title}</h1>
+                </div>
+                <div className="mt-1 inline-flex items-center gap-1.5 rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                  <GitBranch className="size-3" aria-hidden />
+                  <span className="font-mono">{load.conversation.branch}</span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => void handleOpenTerminal()}
+                className="inline-flex h-9 shrink-0 items-center gap-2 rounded-lg bg-muted px-3 text-sm font-medium transition hover:bg-accent"
+              >
+                <SquareTerminal className="size-4" aria-hidden />
+                <span>Open in terminal</span>
+              </button>
             </div>
           </div>
 
@@ -230,7 +329,13 @@ function ConversationRoute() {
             ) : (
               <ul className="flex flex-col gap-3">
                 {messages.map((m) => (
-                  <MessageItem key={m.uuid} message={m} />
+                  <MessageItem
+                    key={messageKey(m)}
+                    message={m}
+                    toolResults={toolResults}
+                    diffToolIds={diffToolIds}
+                    onPermissionDecision={handlePermissionDecision}
+                  />
                 ))}
               </ul>
             )}
@@ -241,7 +346,14 @@ function ConversationRoute() {
             onChange={setDraft}
             onSend={handleSend}
             sending={sending}
-            disabled={connState !== "open"}
+            disabled={connState !== "open" || inputLocked}
+            locked={inputLocked}
+            suggestions={slashSuggestions(draft, slashCommands)}
+            agentMatches={agentSuggestions(draft, agents)}
+            onSuggestionSelect={(command) => {
+              setDraft(`/${command.name}${command.argumentHint ? " " : ""}`);
+            }}
+            onAgentSelect={(agent) => setDraft(insertAgentMention(draft, agent.name))}
           />
         </>
       )}
@@ -284,7 +396,22 @@ function ConnectionPill({ state }: { state: ConnectionState }) {
   );
 }
 
-function MessageItem({ message }: { message: TranscriptMessage }) {
+function messageKey(message: TranscriptMessage): string {
+  if ("uuid" in message) return message.uuid;
+  return `${message.kind}-${message.id}`;
+}
+
+function MessageItem({
+  message,
+  toolResults,
+  diffToolIds,
+  onPermissionDecision,
+}: {
+  message: TranscriptMessage;
+  toolResults: Map<string, Extract<TranscriptMessage, { kind: "tool_result" }>>;
+  diffToolIds: Set<string>;
+  onPermissionDecision: (id: string, decision: "allow" | "deny" | "allow_for_session") => void;
+}) {
   if (message.kind === "user_message") {
     return (
       <li className="flex justify-end">
@@ -299,13 +426,14 @@ function MessageItem({ message }: { message: TranscriptMessage }) {
       <li className="flex justify-start">
         <div className="max-w-[85%] space-y-2 rounded-2xl rounded-bl-md bg-muted px-3 py-2 text-sm">
           {message.blocks.map((block, idx) => (
-            <AssistantBlockView key={idx} block={block} />
+            <AssistantBlockView key={idx} block={block} toolResults={toolResults} />
           ))}
         </div>
       </li>
     );
   }
   if (message.kind === "tool_result") {
+    if (diffToolIds.has(message.tool_use_id)) return null;
     return (
       <li className="flex justify-start">
         <div
@@ -335,10 +463,74 @@ function MessageItem({ message }: { message: TranscriptMessage }) {
       </li>
     );
   }
+  if (message.kind === "permission_request") {
+    return (
+      <li className="flex justify-start">
+        <div className="max-w-[95%] rounded-2xl border border-amber-500/30 bg-amber-500/5 p-3 text-sm">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="font-medium">Permission required</div>
+              <div className="mt-0.5 text-xs text-muted-foreground">
+                {message.tool} · {message.riskLevel} risk
+              </div>
+            </div>
+          </div>
+          <p className="mt-2 text-sm">{message.summary}</p>
+          <pre className="mt-2 max-h-40 overflow-y-auto whitespace-pre-wrap rounded-lg bg-background/70 p-2 font-mono text-xs text-muted-foreground">
+            {truncate(JSON.stringify(message.input, null, 2), 1200)}
+          </pre>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => onPermissionDecision(message.id, "allow")}
+              className="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground"
+            >
+              Allow
+            </button>
+            <button
+              type="button"
+              onClick={() => onPermissionDecision(message.id, "allow_for_session")}
+              className="rounded-lg bg-muted px-3 py-1.5 text-xs font-medium"
+            >
+              Allow for session
+            </button>
+            <button
+              type="button"
+              onClick={() => onPermissionDecision(message.id, "deny")}
+              className="rounded-lg bg-destructive/10 px-3 py-1.5 text-xs font-medium text-destructive"
+            >
+              Deny
+            </button>
+          </div>
+        </div>
+      </li>
+    );
+  }
+  if (message.kind === "permission_decision") {
+    const text =
+      message.decision === "allow_for_session"
+        ? "Allowed for session"
+        : message.decision === "allow"
+          ? "Allowed"
+          : "Denied";
+    return (
+      <li className="flex justify-start">
+        <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+          {text}
+        </span>
+      </li>
+    );
+  }
   return null;
 }
 
-function AssistantBlockView({ block }: { block: AssistantBlock }) {
+function AssistantBlockView({
+  block,
+  toolResults,
+}: {
+  block: AssistantBlock;
+  toolResults: Map<string, Extract<TranscriptMessage, { kind: "tool_result" }>>;
+}) {
   if (block.type === "text") {
     return <p className="whitespace-pre-wrap">{block.text}</p>;
   }
@@ -348,6 +540,9 @@ function AssistantBlockView({ block }: { block: AssistantBlock }) {
         {block.text}
       </p>
     );
+  }
+  if (isDiffToolBlock(block)) {
+    return <ToolDiff block={block} result={toolResults.get(block.id)} />;
   }
   return (
     <div className="rounded-md bg-background/40 px-2 py-1.5 font-mono text-xs">
@@ -367,21 +562,81 @@ function Composer({
   onSend,
   sending,
   disabled,
+  locked,
+  suggestions,
+  agentMatches,
+  onSuggestionSelect,
+  onAgentSelect,
 }: {
   value: string;
   onChange: (text: string) => void;
   onSend: () => void;
   sending: boolean;
   disabled: boolean;
+  locked: boolean;
+  suggestions: SlashCommand[];
+  agentMatches: AgentInfo[];
+  onSuggestionSelect: (command: SlashCommand) => void;
+  onAgentSelect: (agent: AgentInfo) => void;
 }) {
+  const showSlash = suggestions.length > 0;
+  const showAgents = !showSlash && agentMatches.length > 0;
   return (
     <form
-      className="mt-3 flex items-end gap-2"
+      className="relative mt-3 flex items-end gap-2"
       onSubmit={(e) => {
         e.preventDefault();
         onSend();
       }}
     >
+      {showSlash && (
+        <div className="absolute bottom-full left-0 right-14 mb-2 max-h-64 overflow-y-auto rounded-2xl border border-border/70 bg-popover p-2 shadow-lg">
+          {suggestions.map((command) => (
+            <button
+              key={command.name}
+              type="button"
+              onClick={() => onSuggestionSelect(command)}
+              className="flex w-full items-start justify-between gap-3 rounded-xl px-3 py-2 text-left text-sm hover:bg-muted"
+            >
+              <span className="min-w-0">
+                <span className="font-mono">/{command.name}</span>
+                {command.description && (
+                  <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+                    {command.description}
+                  </span>
+                )}
+              </span>
+              {command.argumentHint && (
+                <span className="shrink-0 font-mono text-xs text-muted-foreground">
+                  {command.argumentHint}
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
+      {showAgents && (
+        <div className="absolute bottom-full left-0 right-14 mb-2 max-h-64 overflow-y-auto rounded-2xl border border-border/70 bg-popover p-2 shadow-lg">
+          {agentMatches.map((agent) => (
+            <button
+              key={`${agent.source}:${agent.name}`}
+              type="button"
+              onClick={() => onAgentSelect(agent)}
+              className="flex w-full items-start justify-between gap-3 rounded-xl px-3 py-2 text-left text-sm hover:bg-muted"
+            >
+              <span className="min-w-0">
+                <span className="font-mono">@{agent.name}</span>
+                {agent.description && (
+                  <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+                    {agent.description}
+                  </span>
+                )}
+              </span>
+              <span className="shrink-0 text-xs text-muted-foreground">{agent.source}</span>
+            </button>
+          ))}
+        </div>
+      )}
       <textarea
         value={value}
         onChange={(e) => onChange(e.target.value)}
@@ -392,7 +647,8 @@ function Composer({
           }
         }}
         rows={2}
-        placeholder="Send a message…"
+        disabled={locked}
+        placeholder={locked ? "Answer the permission request to continue…" : "Send a message…"}
         className="min-h-12 flex-1 resize-y rounded-2xl border border-input bg-background px-3 py-2 text-sm outline-none transition focus:border-ring focus:ring-2 focus:ring-ring/30"
       />
       <button
@@ -409,6 +665,57 @@ function Composer({
       </button>
     </form>
   );
+}
+
+function slashSuggestions(value: string, commands: SlashCommand[]): SlashCommand[] {
+  if (!value.startsWith("/")) return [];
+  const query = value.slice(1).split(/\s/, 1)[0]?.toLowerCase() ?? "";
+  if (value.includes(" ") && query.length > 0) return [];
+  return commands
+    .filter(
+      (command) =>
+        command.name.toLowerCase().includes(query) ||
+        command.description.toLowerCase().includes(query),
+    )
+    .slice(0, 8);
+}
+
+function agentSuggestions(value: string, agents: AgentInfo[]): AgentInfo[] {
+  const match = /(^|\s)@([a-zA-Z0-9_-]*)$/.exec(value);
+  if (!match) return [];
+  const query = match[2]?.toLowerCase() ?? "";
+  return agents
+    .filter(
+      (agent) =>
+        agent.name.toLowerCase().includes(query) ||
+        agent.description.toLowerCase().includes(query),
+    )
+    .slice(0, 8);
+}
+
+function insertAgentMention(value: string, name: string): string {
+  return value.replace(/(^|\s)@([a-zA-Z0-9_-]*)$/, (_match, prefix: string) => `${prefix}@${name} `);
+}
+
+function buildToolResultMap(
+  messages: TranscriptMessage[],
+): Map<string, Extract<TranscriptMessage, { kind: "tool_result" }>> {
+  const results = new Map<string, Extract<TranscriptMessage, { kind: "tool_result" }>>();
+  for (const message of messages) {
+    if (message.kind === "tool_result") results.set(message.tool_use_id, message);
+  }
+  return results;
+}
+
+function buildDiffToolIds(messages: TranscriptMessage[]): Set<string> {
+  const ids = new Set<string>();
+  for (const message of messages) {
+    if (message.kind !== "assistant_message") continue;
+    for (const block of message.blocks) {
+      if (block.type === "tool_use" && isDiffToolBlock(block)) ids.add(block.id);
+    }
+  }
+  return ids;
 }
 
 function truncate(text: string, max: number): string {

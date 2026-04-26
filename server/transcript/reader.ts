@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { stat } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 
 function defaultHome(): string {
   return process.env.HOME ?? homedir();
@@ -57,6 +57,30 @@ export function transcriptPath(location: TranscriptLocation): string {
     sanitizeProjectKey(location.cwd),
     `${location.sessionId}.jsonl`,
   );
+}
+
+export type TranscriptSession = {
+  session_id: string;
+  path: string;
+  mtimeMs: number;
+};
+
+export async function listTranscriptSessions(cwd: string): Promise<TranscriptSession[]> {
+  const dir = join(defaultHome(), ".claude", "projects", sanitizeProjectKey(cwd));
+  const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+  const sessions: TranscriptSession[] = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
+    const path = join(dir, entry.name);
+    const info = await stat(path).catch(() => null);
+    if (!info?.isFile()) continue;
+    sessions.push({
+      session_id: entry.name.slice(0, -".jsonl".length),
+      path,
+      mtimeMs: info.mtimeMs,
+    });
+  }
+  return sessions.sort((a, b) => b.mtimeMs - a.mtimeMs);
 }
 
 export async function readTranscript(location: TranscriptLocation): Promise<TranscriptMessage[]> {

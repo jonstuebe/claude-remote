@@ -5,6 +5,8 @@ export type Project = {
   default_branch: string;
   worktree_root: string;
   permissions_mode: "bypassPermissions" | "acceptEdits";
+  current_branch?: string | null;
+  dirty?: boolean;
   created_at: string;
 };
 
@@ -27,6 +29,12 @@ export type Conversation = {
   status: ConversationStatus;
   created_at: string;
   last_active_at: string;
+};
+
+export type ImportableWorktree = {
+  path: string;
+  branch: string | null;
+  session_id: string | null;
 };
 
 export type ApiError = {
@@ -92,6 +100,13 @@ export async function listConversations(projectId: string): Promise<Conversation
   return data.conversations;
 }
 
+export async function listProjectConversationState(
+  projectId: string,
+): Promise<{ conversations: Conversation[]; importable_worktrees: ImportableWorktree[] }> {
+  const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/conversations`);
+  return unwrap<{ conversations: Conversation[]; importable_worktrees: ImportableWorktree[] }>(res);
+}
+
 export type CreateConversationInput =
   | { mode: "main" }
   | { mode: "new-worktree"; branch: string; base_branch?: string }
@@ -106,6 +121,21 @@ export async function createConversation(
     headers: { "content-type": "application/json" },
     body: JSON.stringify(input),
   });
+  return unwrap<Conversation>(res);
+}
+
+export async function importConversation(
+  projectId: string,
+  worktreePath: string,
+): Promise<Conversation> {
+  const res = await fetch(
+    `/api/projects/${encodeURIComponent(projectId)}/conversations/import`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ worktree_path: worktreePath }),
+    },
+  );
   return unwrap<Conversation>(res);
 }
 
@@ -124,6 +154,21 @@ export type TranscriptMessage =
       tool_use_id: string;
       content: string;
       is_error: boolean;
+    }
+  | {
+      kind: "permission_request";
+      id: string;
+      tool: string;
+      input: Record<string, unknown>;
+      summary: string;
+      riskLevel: "medium" | "high";
+      input_locked: boolean;
+    }
+  | {
+      kind: "permission_decision";
+      id: string;
+      decision: "allow" | "deny" | "allow_for_session";
+      input_locked: boolean;
     }
   | { kind: "system"; uuid: string; ts: string; subtype: string; text: string };
 
@@ -173,11 +218,139 @@ export async function getConversationMessages(id: string): Promise<TranscriptMes
   return data.messages;
 }
 
-export async function sendConversationMessage(id: string, text: string): Promise<void> {
+export async function sendConversationMessage(
+  id: string,
+  text: string,
+  takeover = false,
+): Promise<void> {
   const res = await fetch(`/api/conversations/${encodeURIComponent(id)}/messages`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ text }),
+    body: JSON.stringify({ text, takeover }),
   });
   await unwrap<{ ok: true }>(res);
+}
+
+export async function openConversationInTerminal(id: string): Promise<void> {
+  const res = await fetch(`/api/conversations/${encodeURIComponent(id)}/open-terminal`, {
+    method: "POST",
+  });
+  await unwrap<{ ok: true }>(res);
+}
+
+export type SlashCommandKind = "tui-replaced" | "server-handled" | "dispatched";
+
+export type SlashCommand = {
+  name: string;
+  kind: SlashCommandKind;
+  description: string;
+  argumentHint: string;
+  source: string;
+};
+
+export async function listSlashCommands(projectId: string, query = ""): Promise<SlashCommand[]> {
+  const params = new URLSearchParams({ project_id: projectId });
+  if (query) params.set("q", query);
+  const res = await fetch(`/api/slash-commands?${params}`);
+  const data = await unwrap<{ commands: SlashCommand[] }>(res);
+  return data.commands;
+}
+
+export type PluginInfo = {
+  name: string;
+  path: string;
+  enabled: boolean;
+};
+
+export async function listPlugins(projectId: string): Promise<PluginInfo[]> {
+  const params = new URLSearchParams({ project_id: projectId });
+  const res = await fetch(`/api/plugins?${params}`);
+  const data = await unwrap<{ plugins: PluginInfo[] }>(res);
+  return data.plugins;
+}
+
+export async function installPlugin(marketplaceId: string): Promise<string> {
+  const res = await fetch("/api/plugins/install", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ marketplace_id: marketplaceId }),
+  });
+  const data = await unwrap<{ output: string }>(res);
+  return data.output;
+}
+
+export async function uninstallPlugin(name: string): Promise<string> {
+  const res = await fetch(`/api/plugins/${encodeURIComponent(name)}`, { method: "DELETE" });
+  const data = await unwrap<{ output: string }>(res);
+  return data.output;
+}
+
+export async function setProjectPluginEnabled(
+  projectId: string,
+  pluginName: string,
+  enabled: boolean,
+): Promise<void> {
+  const res = await fetch(
+    `/api/projects/${encodeURIComponent(projectId)}/plugins/${encodeURIComponent(pluginName)}`,
+    {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    },
+  );
+  await unwrap<{ ok: true }>(res);
+}
+
+export type SettingsJson = Record<string, unknown>;
+
+export type UserSettings = SettingsJson & {
+  keep_awake?: boolean;
+  terminal_command_template?: string;
+};
+
+export async function getSettings(
+  projectId: string,
+): Promise<{ user: UserSettings; project: SettingsJson }> {
+  const params = new URLSearchParams({ project_id: projectId });
+  const res = await fetch(`/api/settings?${params}`);
+  return unwrap<{ user: UserSettings; project: SettingsJson }>(res);
+}
+
+export async function updateUserSettings(input: Partial<UserSettings>): Promise<UserSettings> {
+  const res = await fetch("/api/settings/user", {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  const data = await unwrap<{ user: UserSettings }>(res);
+  return data.user;
+}
+
+export async function updateProjectSettings(
+  projectId: string,
+  settings: SettingsJson,
+): Promise<SettingsJson> {
+  const params = new URLSearchParams({ project_id: projectId });
+  const res = await fetch(`/api/settings/project?${params}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(settings),
+  });
+  const data = await unwrap<{ project: SettingsJson }>(res);
+  return data.project;
+}
+
+export type AgentInfo = {
+  name: string;
+  description: string;
+  model: string | null;
+  tools: string[];
+  source: "project" | "user";
+  path: string;
+};
+
+export async function listAgents(projectId: string): Promise<AgentInfo[]> {
+  const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/agents`);
+  const data = await unwrap<{ agents: AgentInfo[] }>(res);
+  return data.agents;
 }

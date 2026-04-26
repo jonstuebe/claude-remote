@@ -70,6 +70,13 @@ export type DeleteConversationOptions = {
   force?: boolean;
 };
 
+export type ImportConversationInput = {
+  worktree_path: string;
+  branch: string;
+  session_id?: string | null;
+  title?: string;
+};
+
 const CONVERSATION_COLUMNS =
   "id, project_id, worktree_path, branch, session_id, title, color, is_default, status, created_at, last_active_at";
 
@@ -268,6 +275,40 @@ function insertConversation(db: Database, conversation: Conversation): void {
       conversation.last_active_at,
     ],
   );
+}
+
+export function importConversation(
+  db: Database,
+  project: Project,
+  input: ImportConversationInput,
+): Conversation {
+  const worktreePath = resolve(input.worktree_path);
+  if (isPathClaimed(db, project.id, worktreePath)) {
+    throw new ConversationValidationError(
+      "worktree_in_use",
+      "branch",
+      `A conversation already claims worktree path "${worktreePath}"`,
+    );
+  }
+
+  const title = input.title?.trim() || input.branch;
+  const now = new Date().toISOString();
+  const conversation: Conversation = {
+    id: randomUUID(),
+    project_id: project.id,
+    worktree_path: worktreePath,
+    branch: input.branch,
+    session_id: input.session_id ?? null,
+    title,
+    color: null,
+    is_default: false,
+    status: "active",
+    created_at: now,
+    last_active_at: now,
+  };
+
+  insertConversation(db, conversation);
+  return conversation;
 }
 
 export async function createConversation(

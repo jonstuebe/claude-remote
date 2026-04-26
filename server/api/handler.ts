@@ -3,8 +3,10 @@ import {
   deleteProject,
   getProject,
   listProjects,
+  ProjectNotFoundError,
   ProjectValidationError,
   registerProject,
+  updateProject,
   type Project,
 } from "../projects/registry.ts";
 import {
@@ -14,9 +16,8 @@ import {
   deleteConversation,
   ensureDefaultConversation,
   getConversation,
-  listConversations,
+  importConversation,
   updateConversation,
-  type Conversation,
   type CreateConversationInput,
   type UpdateConversationInput,
 } from "../conversations/registry.ts";
@@ -26,12 +27,26 @@ import { SessionStartError } from "../sessions/manager.ts";
 import { readTranscript } from "../transcript/reader.ts";
 import { WorktreeError } from "../worktrees/manager.ts";
 import type { MetaBroadcaster } from "../ws/meta-broadcaster.ts";
-import { listServerHandledCommands } from "../slash-commands/registry.ts";
+import { slashCommandRegistry } from "../slash-commands/registry.ts";
+import {
+  getProjectRuntimeStatus,
+  reconcileProject,
+} from "../reconciler.ts";
+import {
+  installPlugin,
+  listPlugins,
+  setPluginEnabled,
+  uninstallPlugin,
+} from "../plugins/manager.ts";
+import type { SettingsManager } from "../settings/manager.ts";
+import { listAgents } from "../agents/browser.ts";
+import { launchTerminal } from "../terminal/launcher.ts";
 
 export type ApiContext = {
   db: Database;
   sessions: SessionManager;
   meta: MetaBroadcaster;
+  settings: SettingsManager;
 };
 
 const json = (status: number, body: unknown): Response =>
@@ -54,6 +69,11 @@ function projectConversationsMatch(pathname: string): string | null {
   return m ? decodeURIComponent(m[1]!) : null;
 }
 
+function projectConversationImportMatch(pathname: string): string | null {
+  const m = /^\/api\/projects\/([^/]+)\/conversations\/import\/?$/.exec(pathname);
+  return m ? decodeURIComponent(m[1]!) : null;
+}
+
 function conversationByIdMatch(pathname: string): string | null {
   const m = /^\/api\/conversations\/([^/]+)\/?$/.exec(pathname);
   return m ? decodeURIComponent(m[1]!) : null;
@@ -64,8 +84,50 @@ function conversationMessagesMatch(pathname: string): string | null {
   return m ? decodeURIComponent(m[1]!) : null;
 }
 
+function conversationOpenTerminalMatch(pathname: string): string | null {
+  const m = /^\/api\/conversations\/([^/]+)\/open-terminal\/?$/.exec(pathname);
+  return m ? decodeURIComponent(m[1]!) : null;
+}
+
 function slashCommandsUrl(pathname: string): boolean {
   return pathname === "/api/slash-commands" || pathname === "/api/slash-commands/";
+}
+
+function pluginsUrl(pathname: string): boolean {
+  return pathname === "/api/plugins" || pathname === "/api/plugins/";
+}
+
+function pluginInstallUrl(pathname: string): boolean {
+  return pathname === "/api/plugins/install" || pathname === "/api/plugins/install/";
+}
+
+function pluginByNameMatch(pathname: string): string | null {
+  const m = /^\/api\/plugins\/([^/]+)\/?$/.exec(pathname);
+  return m ? decodeURIComponent(m[1]!) : null;
+}
+
+function projectPluginMatch(pathname: string): { projectId: string; pluginName: string } | null {
+  const m = /^\/api\/projects\/([^/]+)\/plugins\/([^/]+)\/?$/.exec(pathname);
+  return m
+    ? { projectId: decodeURIComponent(m[1]!), pluginName: decodeURIComponent(m[2]!) }
+    : null;
+}
+
+function settingsUrl(pathname: string): boolean {
+  return pathname === "/api/settings" || pathname === "/api/settings/";
+}
+
+function userSettingsUrl(pathname: string): boolean {
+  return pathname === "/api/settings/user" || pathname === "/api/settings/user/";
+}
+
+function projectSettingsUrl(pathname: string): boolean {
+  return pathname === "/api/settings/project" || pathname === "/api/settings/project/";
+}
+
+function projectAgentsMatch(pathname: string): string | null {
+  const m = /^\/api\/projects\/([^/]+)\/agents\/?$/.exec(pathname);
+  return m ? decodeURIComponent(m[1]!) : null;
 }
 
 async function readJson(req: Request): Promise<unknown> {
@@ -105,17 +167,183 @@ async function handleCreateProject(req: Request, ctx: ApiContext): Promise<Respo
   }
 }
 
-function handleListProjects(ctx: ApiContext): Response {
-  const projects: Project[] = listProjects(ctx.db);
+type ProjectResponse = Project & {
+  current_branch: string | null;
+  dirty: boolean;
+};
+
+async function withProjectStatus(project: Project): Promise<ProjectResponse> {
+  const status = await getProjectRuntimeStatus(project);
+  return { ...project, ...status };
+}
+
+async function handleListProjects(ctx: ApiContext): Promise<Response> {
+  const projects = await Promise.all(listProjects(ctx.db).map((project) => withProjectStatus(project)));
   return json(200, { projects });
 }
 
-function handleGetProject(id: string, ctx: ApiContext): Response {
+async function handleGetProject(id: string, ctx: ApiContext): Promise<Response> {
   const project = getProject(ctx.db, id);
   if (!project) {
     return json(404, { error: { code: "not_found", message: `No project with id "${id}"` } });
   }
-  return json(200, project);
+  return json(200, await withProjectStatus(project));
+}
+
+async function handleUpdateProject(id: string, req: Request, ctx: ApiContext): Promise<Response> {
+  const body = await readJson(req);
+  if (!isPlainObject(body)) {
+    return json(400, {
+      error: { code: "invalid_body", message: "Request body must be a JSON object" },
+    });
+  }
+  if (
+    "permissions_mode" in body &&
+    body.permissions_mode !== "bypassPermissions" &&
+    body.permissions_mode !== "acceptEdits"
+  ) {
+    return json(400, {
+      error: {
+        code: "invalid_body",
+        field: "permissions_mode",
+        message: 'permissions_mode must be "bypassPermissions" or "acceptEdits"',
+      },
+    });
+  }
+  try {
+    const project = updateProject(ctx.db, id, {
+      permissions_mode:
+        body.permissions_mode === "bypassPermissions" || body.permissions_mode === "acceptEdits"
+          ? body.permissions_mode
+          : undefined,
+    });
+    return json(200, await withProjectStatus(project));
+  } catch (err) {
+    if (err instanceof ProjectNotFoundError) {
+      return json(404, { error: { code: "not_found", message: err.message } });
+    }
+    throw err;
+  }
+}
+
+async function handleListPlugins(url: URL, ctx: ApiContext): Promise<Response> {
+  const projectId = url.searchParams.get("project_id");
+  const project = projectId ? getProject(ctx.db, projectId) : null;
+  if (projectId && !project) {
+    return json(404, { error: { code: "not_found", message: `No project with id "${projectId}"` } });
+  }
+  return json(200, { plugins: await listPlugins(project?.repo_path) });
+}
+
+async function handleInstallPlugin(req: Request): Promise<Response> {
+  const body = await readJson(req);
+  if (!isPlainObject(body) || typeof body.marketplace_id !== "string") {
+    return json(400, {
+      error: {
+        code: "invalid_body",
+        field: "marketplace_id",
+        message: "Body must include marketplace_id",
+      },
+    });
+  }
+  const result = await installPlugin(body.marketplace_id);
+  if (!result.ok) return json(500, { error: { code: "plugin_install_failed", message: result.output } });
+  return json(200, result);
+}
+
+async function handleUninstallPlugin(name: string): Promise<Response> {
+  const result = await uninstallPlugin(name);
+  if (!result.ok) return json(500, { error: { code: "plugin_uninstall_failed", message: result.output } });
+  return json(200, result);
+}
+
+async function handleToggleProjectPlugin(
+  projectId: string,
+  pluginName: string,
+  req: Request,
+  ctx: ApiContext,
+): Promise<Response> {
+  const project = getProject(ctx.db, projectId);
+  if (!project) {
+    return json(404, { error: { code: "not_found", message: `No project with id "${projectId}"` } });
+  }
+  const body = await readJson(req);
+  if (!isPlainObject(body) || typeof body.enabled !== "boolean") {
+    return json(400, {
+      error: { code: "invalid_body", field: "enabled", message: "Body must include enabled" },
+    });
+  }
+  await setPluginEnabled(project.repo_path, pluginName, body.enabled);
+  return json(200, { ok: true });
+}
+
+async function handleGetSettings(url: URL, ctx: ApiContext): Promise<Response> {
+  const projectId = url.searchParams.get("project_id");
+  const project = projectId ? getProject(ctx.db, projectId) : null;
+  if (projectId && !project) {
+    return json(404, { error: { code: "not_found", message: `No project with id "${projectId}"` } });
+  }
+  const [user, projectSettings] = await Promise.all([
+    ctx.settings.readUserSettings(),
+    project ? ctx.settings.readProjectSettings(project.repo_path) : Promise.resolve({}),
+  ]);
+  return json(200, { user, project: projectSettings });
+}
+
+async function handleUpdateUserSettings(req: Request, ctx: ApiContext): Promise<Response> {
+  const body = await readJson(req);
+  if (!isPlainObject(body)) {
+    return json(400, {
+      error: { code: "invalid_body", message: "Request body must be a JSON object" },
+    });
+  }
+  const input: { keep_awake?: boolean; terminal_command_template?: string } = {};
+  if ("keep_awake" in body) {
+    if (typeof body.keep_awake !== "boolean") {
+      return json(400, {
+        error: { code: "invalid_body", field: "keep_awake", message: "keep_awake must be boolean" },
+      });
+    }
+    input.keep_awake = body.keep_awake;
+  }
+  if ("terminal_command_template" in body) {
+    if (typeof body.terminal_command_template !== "string") {
+      return json(400, {
+        error: {
+          code: "invalid_body",
+          field: "terminal_command_template",
+          message: "terminal_command_template must be a string",
+        },
+      });
+    }
+    input.terminal_command_template = body.terminal_command_template;
+  }
+  return json(200, { user: await ctx.settings.writeUserSettings(input) });
+}
+
+async function handleUpdateProjectSettings(req: Request, url: URL, ctx: ApiContext): Promise<Response> {
+  const projectId = url.searchParams.get("project_id");
+  const project = projectId ? getProject(ctx.db, projectId) : null;
+  if (!projectId || !project) {
+    return json(404, { error: { code: "not_found", message: "Project not found" } });
+  }
+  const body = await readJson(req);
+  if (!isPlainObject(body)) {
+    return json(400, {
+      error: { code: "invalid_body", message: "Request body must be a JSON object" },
+    });
+  }
+  return json(200, {
+    project: await ctx.settings.writeProjectSettings(project.repo_path, body),
+  });
+}
+
+async function handleListProjectAgents(projectId: string, ctx: ApiContext): Promise<Response> {
+  const project = getProject(ctx.db, projectId);
+  if (!project) {
+    return json(404, { error: { code: "not_found", message: `No project with id "${projectId}"` } });
+  }
+  return json(200, { agents: await listAgents(project.repo_path) });
 }
 
 function handleDeleteProject(id: string, ctx: ApiContext): Response {
@@ -136,9 +364,8 @@ async function handleListProjectConversations(
       error: { code: "not_found", message: `No project with id "${projectId}"` },
     });
   }
-  await ensureDefaultConversation(ctx.db, project);
-  const conversations: Conversation[] = listConversations(ctx.db, project.id);
-  return json(200, { conversations });
+  const result = await reconcileProject(ctx.db, project);
+  return json(200, result);
 }
 
 function parseCreateConversationInput(body: Record<string, unknown>):
@@ -196,12 +423,60 @@ async function handleCreateProjectConversation(
   await ensureDefaultConversation(ctx.db, project);
   try {
     const conversation = await createConversation(ctx.db, project, parsed);
+    await reconcileProject(ctx.db, project);
     return json(201, conversation);
   } catch (err) {
     if (err instanceof ConversationValidationError) {
       const status = err.code === "worktree_in_use" ? 409 : 400;
       return json(status, {
         error: { code: err.code, field: err.field, message: err.message },
+      });
+    }
+    throw err;
+  }
+}
+
+async function handleImportProjectConversation(
+  projectId: string,
+  req: Request,
+  ctx: ApiContext,
+): Promise<Response> {
+  const project = getProject(ctx.db, projectId);
+  if (!project) {
+    return json(404, {
+      error: { code: "not_found", message: `No project with id "${projectId}"` },
+    });
+  }
+  const body = await readJson(req);
+  if (!isPlainObject(body) || typeof body.worktree_path !== "string") {
+    return json(400, {
+      error: {
+        code: "invalid_body",
+        field: "worktree_path",
+        message: "Body must include worktree_path",
+      },
+    });
+  }
+
+  const { importable_worktrees } = await reconcileProject(ctx.db, project);
+  const match = importable_worktrees.find((item) => item.path === body.worktree_path);
+  if (!match) {
+    return json(404, {
+      error: { code: "not_importable", message: "No importable worktree found at that path" },
+    });
+  }
+
+  try {
+    const conversation = importConversation(ctx.db, project, {
+      worktree_path: match.path,
+      branch: match.branch ?? "detached",
+      session_id: match.session_id,
+    });
+    return json(201, conversation);
+  } catch (err) {
+    if (err instanceof ConversationValidationError) {
+      return json(409, {
+        error: { code: err.code, field: err.field ?? undefined, message: err.message },
       });
     }
     throw err;
@@ -316,6 +591,7 @@ async function handleDeleteConversation(
   try {
     await ctx.sessions.stop(id);
     await deleteConversation(ctx.db, project, conversation, { removeWorktree, force });
+    if (removeWorktree) await reconcileProject(ctx.db, project);
     ctx.meta.broadcast(id, { kind: "conversation_deleted", conversation_id: id });
     return new Response(null, { status: 204 });
   } catch (err) {
@@ -357,6 +633,7 @@ async function handleSendConversationMessage(
       error: { code: "invalid_body", message: "Body must be { text: string }" },
     });
   }
+  const takeover = body.takeover === true;
   const conversation = getConversation(ctx.db, id);
   if (!conversation) {
     return json(404, {
@@ -364,7 +641,7 @@ async function handleSendConversationMessage(
     });
   }
   try {
-    await ctx.sessions.send(id, body.text);
+    await ctx.sessions.send(id, body.text, { takeover });
     return json(202, { ok: true });
   } catch (err) {
     if (err instanceof SessionStartError) {
@@ -375,12 +652,107 @@ async function handleSendConversationMessage(
   }
 }
 
+async function handleOpenConversationTerminal(id: string, ctx: ApiContext): Promise<Response> {
+  const conversation = getConversation(ctx.db, id);
+  if (!conversation) {
+    return json(404, {
+      error: { code: "not_found", message: `No conversation with id "${id}"` },
+    });
+  }
+  const userSettings = await ctx.settings.readUserSettings();
+  try {
+    await ctx.sessions.release(id);
+    await launchTerminal({
+      template: userSettings.terminal_command_template ?? "",
+      worktreePath: conversation.worktree_path,
+      sessionId: conversation.session_id,
+    });
+    return json(200, { ok: true });
+  } catch (err) {
+    return json(500, {
+      error: {
+        code: "terminal_launch_failed",
+        message: err instanceof Error ? err.message : "Terminal launch failed",
+      },
+    });
+  }
+}
+
 export async function handleApi(req: Request, ctx: ApiContext): Promise<Response | null> {
   const url = new URL(req.url);
   if (!url.pathname.startsWith("/api/")) return null;
 
   if (slashCommandsUrl(url.pathname)) {
-    if (req.method === "GET") return json(200, { commands: listServerHandledCommands() });
+    if (req.method === "GET") {
+      const projectId = url.searchParams.get("project_id");
+      const query = url.searchParams.get("q") ?? "";
+      const project = projectId ? getProject(ctx.db, projectId) : null;
+      const commands = await slashCommandRegistry.search(query, {
+        projectPath: project?.repo_path,
+      });
+      return json(200, { commands });
+    }
+    return json(405, {
+      error: {
+        code: "method_not_allowed",
+        message: `Method ${req.method} not allowed on ${url.pathname}`,
+      },
+    });
+  }
+
+  if (settingsUrl(url.pathname)) {
+    if (req.method === "GET") return handleGetSettings(url, ctx);
+    return json(405, {
+      error: {
+        code: "method_not_allowed",
+        message: `Method ${req.method} not allowed on ${url.pathname}`,
+      },
+    });
+  }
+
+  if (userSettingsUrl(url.pathname)) {
+    if (req.method === "PATCH") return handleUpdateUserSettings(req, ctx);
+    return json(405, {
+      error: {
+        code: "method_not_allowed",
+        message: `Method ${req.method} not allowed on ${url.pathname}`,
+      },
+    });
+  }
+
+  if (projectSettingsUrl(url.pathname)) {
+    if (req.method === "PATCH") return handleUpdateProjectSettings(req, url, ctx);
+    return json(405, {
+      error: {
+        code: "method_not_allowed",
+        message: `Method ${req.method} not allowed on ${url.pathname}`,
+      },
+    });
+  }
+
+  if (pluginInstallUrl(url.pathname)) {
+    if (req.method === "POST") return handleInstallPlugin(req);
+    return json(405, {
+      error: {
+        code: "method_not_allowed",
+        message: `Method ${req.method} not allowed on ${url.pathname}`,
+      },
+    });
+  }
+
+  if (pluginsUrl(url.pathname)) {
+    if (req.method === "GET") return handleListPlugins(url, ctx);
+    return json(405, {
+      error: {
+        code: "method_not_allowed",
+        message: `Method ${req.method} not allowed on ${url.pathname}`,
+      },
+    });
+  }
+
+  const pluginName = pluginByNameMatch(url.pathname);
+  if (pluginName) {
+    if (req.method === "DELETE") return handleUninstallPlugin(pluginName);
     return json(405, {
       error: {
         code: "method_not_allowed",
@@ -392,6 +764,46 @@ export async function handleApi(req: Request, ctx: ApiContext): Promise<Response
   if (projectsListUrl(url.pathname)) {
     if (req.method === "GET") return handleListProjects(ctx);
     if (req.method === "POST") return handleCreateProject(req, ctx);
+    return json(405, {
+      error: {
+        code: "method_not_allowed",
+        message: `Method ${req.method} not allowed on ${url.pathname}`,
+      },
+    });
+  }
+
+  const importProjectId = projectConversationImportMatch(url.pathname);
+  if (importProjectId) {
+    if (req.method === "POST") return handleImportProjectConversation(importProjectId, req, ctx);
+    return json(405, {
+      error: {
+        code: "method_not_allowed",
+        message: `Method ${req.method} not allowed on ${url.pathname}`,
+      },
+    });
+  }
+
+  const projectPlugin = projectPluginMatch(url.pathname);
+  if (projectPlugin) {
+    if (req.method === "PATCH") {
+      return handleToggleProjectPlugin(
+        projectPlugin.projectId,
+        projectPlugin.pluginName,
+        req,
+        ctx,
+      );
+    }
+    return json(405, {
+      error: {
+        code: "method_not_allowed",
+        message: `Method ${req.method} not allowed on ${url.pathname}`,
+      },
+    });
+  }
+
+  const agentsProjectId = projectAgentsMatch(url.pathname);
+  if (agentsProjectId) {
+    if (req.method === "GET") return handleListProjectAgents(agentsProjectId, ctx);
     return json(405, {
       error: {
         code: "method_not_allowed",
@@ -426,6 +838,17 @@ export async function handleApi(req: Request, ctx: ApiContext): Promise<Response
     });
   }
 
+  const conversationTerminalId = conversationOpenTerminalMatch(url.pathname);
+  if (conversationTerminalId) {
+    if (req.method === "POST") return handleOpenConversationTerminal(conversationTerminalId, ctx);
+    return json(405, {
+      error: {
+        code: "method_not_allowed",
+        message: `Method ${req.method} not allowed on ${url.pathname}`,
+      },
+    });
+  }
+
   const conversationId = conversationByIdMatch(url.pathname);
   if (conversationId) {
     if (req.method === "GET") return handleGetConversation(conversationId, ctx);
@@ -442,6 +865,7 @@ export async function handleApi(req: Request, ctx: ApiContext): Promise<Response
   const id = projectByIdMatch(url.pathname);
   if (id) {
     if (req.method === "GET") return handleGetProject(id, ctx);
+    if (req.method === "PATCH") return handleUpdateProject(id, req, ctx);
     if (req.method === "DELETE") return handleDeleteProject(id, ctx);
     return json(405, {
       error: {

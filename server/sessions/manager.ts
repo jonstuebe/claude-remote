@@ -8,6 +8,9 @@ import type {
   Spawner,
   SpawnInputMessage,
 } from "./types.ts";
+import type { PermissionBroker, PermissionDecision } from "../permissions/broker.ts";
+import { slashCommandRegistry } from "../slash-commands/registry.ts";
+import { listTranscriptSessions } from "../transcript/reader.ts";
 
 export class SessionStartError extends Error {
   readonly code: string;
@@ -21,6 +24,7 @@ export class SessionStartError extends Error {
 export type SessionManagerOptions = {
   db: Database;
   spawner: Spawner;
+  permissions?: PermissionBroker;
   isPidAlive?: (pid: number) => boolean;
   hostPid?: number;
 };
@@ -43,7 +47,11 @@ type ActiveSession = {
 type ConversationRow = {
   id: string;
   worktree_path: string;
+  session_id: string | null;
+  permissions_mode: "bypassPermissions" | "acceptEdits";
 };
+
+const TAKEOVER_WINDOW_MS = 5 * 60 * 1000;
 
 const defaultIsPidAlive = (pid: number): boolean => {
   try {
@@ -57,6 +65,7 @@ const defaultIsPidAlive = (pid: number): boolean => {
 export class SessionManager {
   private readonly db: Database;
   private readonly spawner: Spawner;
+  private readonly permissions: PermissionBroker | null;
   private readonly isPidAlive: (pid: number) => boolean;
   private readonly hostPid: number;
 
@@ -68,6 +77,7 @@ export class SessionManager {
   constructor(options: SessionManagerOptions) {
     this.db = options.db;
     this.spawner = options.spawner;
+    this.permissions = options.permissions ?? null;
     this.isPidAlive = options.isPidAlive ?? defaultIsPidAlive;
     this.hostPid = options.hostPid ?? process.pid;
   }
@@ -111,6 +121,10 @@ export class SessionManager {
     return [...(this.buffered.get(conversationId) ?? [])];
   }
 
+  emit(conversationId: string, event: SessionEvent): void {
+    this.broadcast(conversationId, event);
+  }
+
   async start(
     conversationId: string,
     options: { firstInput?: SpawnInputMessage } = {},
@@ -147,7 +161,7 @@ export class SessionManager {
     }
   }
 
-  async send(conversationId: string, text: string): Promise<void> {
+  async send(conversationId: string, text: string, options: { takeover?: boolean } = {}): Promise<void> {
     const message: SpawnInputMessage = {
       type: "user",
       message: { role: "user", content: text },
@@ -172,6 +186,16 @@ export class SessionManager {
     // First send for this conversation. Pre-buffer the user's text so the SDK
     // has input on its first read — without it, the SDK never emits the init
     // message we await on start, and we deadlock.
+    if (
+      !options.takeover &&
+      this.hasRecordedSession(conversationId) &&
+      (await this.needsTakeover(conversationId))
+    ) {
+      throw new SessionStartError(
+        "takeover_required",
+        "This conversation may be active in your terminal. Take over?",
+      );
+    }
     await this.start(conversationId, { firstInput: message });
   }
 
@@ -183,13 +207,26 @@ export class SessionManager {
     this.cleanup(conversationId, "stopped");
   }
 
+  async release(conversationId: string): Promise<void> {
+    await this.stop(conversationId);
+    this.db.run("DELETE FROM session_ledger WHERE conversation_id = ?", [conversationId]);
+  }
+
+  resolvePermission(requestId: string, decision: PermissionDecision): boolean {
+    return this.permissions?.resolve(requestId, decision) ?? false;
+  }
+
   private async doSpawn(
     conversationId: string,
     firstInput?: SpawnInputMessage,
   ): Promise<SessionInfo> {
     const conversation = this.db
       .prepare<ConversationRow, [string]>(
-        "SELECT id, worktree_path FROM conversations WHERE id = ?",
+        `SELECT c.id, c.worktree_path, p.permissions_mode
+                , c.session_id
+         FROM conversations c
+         JOIN projects p ON p.id = c.project_id
+         WHERE c.id = ?`,
       )
       .get(conversationId);
     if (!conversation) {
@@ -226,7 +263,21 @@ export class SessionManager {
 
     const input = new InputStream();
     if (firstInput) input.push(firstInput);
-    const result = this.spawner({ cwd: conversation.worktree_path, input });
+    const result = this.spawner({
+      cwd: conversation.worktree_path,
+      input,
+      permissionMode: conversation.permissions_mode,
+      canUseTool: this.permissions
+        ? (toolName, toolInput, context) =>
+            this.permissions!.canUseTool(
+              conversationId,
+              conversation.permissions_mode,
+              toolName,
+              toolInput,
+              context,
+            )
+        : undefined,
+    });
 
     const initState: {
       resolve: ((info: SessionInfo) => void) | null;
@@ -251,6 +302,10 @@ export class SessionManager {
         for await (const message of result.iterator) {
           if (message.type === "system" && (message as { subtype?: string }).subtype === "init") {
             const sdkSessionId = (message as { session_id: string }).session_id;
+            const slashCommands = (message as { slash_commands?: unknown }).slash_commands;
+            if (Array.isArray(slashCommands)) {
+              slashCommandRegistry.refreshFromSession(slashCommands as string[]);
+            }
             session.sdk_session_id = sdkSessionId;
             this.active.set(conversationId, session);
             this.db.run(
@@ -322,9 +377,41 @@ export class SessionManager {
     const session = this.active.get(conversationId);
     if (!session) return;
     this.active.delete(conversationId);
+    this.permissions?.clearConversation(conversationId);
     this.db.run("DELETE FROM session_ledger WHERE conversation_id = ?", [conversationId]);
     this.broadcast(conversationId, { kind: "session_end", reason });
     this.buffered.delete(conversationId);
+  }
+
+  private async needsTakeover(conversationId: string): Promise<boolean> {
+    const conversation = this.db
+      .prepare<ConversationRow, [string]>(
+        `SELECT c.id, c.worktree_path, c.session_id, p.permissions_mode
+         FROM conversations c
+         JOIN projects p ON p.id = c.project_id
+         WHERE c.id = ?`,
+      )
+      .get(conversationId);
+    if (!conversation?.session_id) return false;
+    const ledger = this.db
+      .prepare<{ conversation_id: string }, [string]>(
+        "SELECT conversation_id FROM session_ledger WHERE conversation_id = ?",
+      )
+      .get(conversationId);
+    if (ledger || this.active.has(conversationId)) return false;
+    const sessions = await listTranscriptSessions(conversation.worktree_path);
+    const transcript = sessions.find((session) => session.session_id === conversation.session_id);
+    if (!transcript) return false;
+    return Date.now() - transcript.mtimeMs < TAKEOVER_WINDOW_MS;
+  }
+
+  private hasRecordedSession(conversationId: string): boolean {
+    const row = this.db
+      .prepare<{ session_id: string | null }, [string]>(
+        "SELECT session_id FROM conversations WHERE id = ?",
+      )
+      .get(conversationId);
+    return typeof row?.session_id === "string" && row.session_id.length > 0;
   }
 }
 

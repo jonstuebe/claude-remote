@@ -13,6 +13,9 @@ import {
   type WsAttachment,
 } from "./ws/transport.ts";
 import { MetaBroadcaster } from "./ws/meta-broadcaster.ts";
+import { reconcileAllProjects } from "./reconciler.ts";
+import { defaultPermissionDenylist, PermissionBroker } from "./permissions/broker.ts";
+import { SettingsManager } from "./settings/manager.ts";
 
 const ROOT = resolve(import.meta.dir, "..");
 const MIGRATIONS_DIR = resolve(ROOT, "server/db/migrations");
@@ -24,12 +27,20 @@ if (result.applied.length > 0) {
   console.log(`[dev-api] applied ${result.applied.length} migration(s) on startup`);
 }
 
-const sessions = new SessionManager({ db, spawner: sdkSpawner });
 const meta = new MetaBroadcaster();
+const settings = new SettingsManager();
+await settings.initialize();
+let sessions: SessionManager;
+const permissions = new PermissionBroker({
+  denylist: defaultPermissionDenylist(),
+  emit: (conversationId, event) => sessions.emit(conversationId, event),
+});
+sessions = new SessionManager({ db, spawner: sdkSpawner, permissions });
 const pruned = sessions.pruneStaleEntries();
 if (pruned > 0) {
   console.log(`[dev-api] pruned ${pruned} stale session_ledger entr${pruned === 1 ? "y" : "ies"}`);
 }
+await reconcileAllProjects(db);
 
 const apiPortValue = process.env.API_PORT ?? "2634";
 const apiPort = Number.parseInt(apiPortValue, 10);
@@ -53,7 +64,7 @@ const server = Bun.serve<WsAttachment>({
       if (upgraded) return undefined as unknown as Response;
       return new Response("WebSocket upgrade failed", { status: 426 });
     }
-    const response = await handleApi(req, { db, sessions, meta });
+    const response = await handleApi(req, { db, sessions, meta, settings });
     if (response) return response;
     return new Response("Not Found", { status: 404 });
   },

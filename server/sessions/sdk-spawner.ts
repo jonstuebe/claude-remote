@@ -1,7 +1,7 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { SpawnedSDKMessage, Spawner, SpawnInputMessage } from "./types.ts";
 
-export const sdkSpawner: Spawner = ({ cwd, input }) => {
+export const sdkSpawner: Spawner = ({ cwd, input, permissionMode, canUseTool }) => {
   const abortController = new AbortController();
 
   const sdkInput = {
@@ -27,8 +27,9 @@ export const sdkSpawner: Spawner = ({ cwd, input }) => {
     prompt: sdkInput,
     options: {
       cwd,
-      permissionMode: "bypassPermissions",
-      allowDangerouslySkipPermissions: true,
+      permissionMode,
+      allowDangerouslySkipPermissions: permissionMode === "bypassPermissions",
+      canUseTool,
       settingSources: ["project", "user"],
       abortController,
       env: {

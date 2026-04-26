@@ -14,6 +14,9 @@ import {
   type WsAttachment,
 } from "./server/ws/transport.ts";
 import { MetaBroadcaster } from "./server/ws/meta-broadcaster.ts";
+import { reconcileAllProjects } from "./server/reconciler.ts";
+import { defaultPermissionDenylist, PermissionBroker } from "./server/permissions/broker.ts";
+import { SettingsManager } from "./server/settings/manager.ts";
 
 const ROOT = import.meta.dir;
 const MIGRATIONS_DIR = resolve(ROOT, "server/db/migrations");
@@ -28,12 +31,20 @@ if (result.applied.length > 0) {
   console.log(`[db] applied ${result.applied.length} migration(s) on startup`);
 }
 
-const sessions = new SessionManager({ db, spawner: sdkSpawner });
 const meta = new MetaBroadcaster();
+const settings = new SettingsManager();
+await settings.initialize();
+let sessions: SessionManager;
+const permissions = new PermissionBroker({
+  denylist: defaultPermissionDenylist(),
+  emit: (conversationId, event) => sessions.emit(conversationId, event),
+});
+sessions = new SessionManager({ db, spawner: sdkSpawner, permissions });
 const pruned = sessions.pruneStaleEntries();
 if (pruned > 0) {
   console.log(`[db] pruned ${pruned} stale session_ledger entr${pruned === 1 ? "y" : "ies"}`);
 }
+await reconcileAllProjects(db);
 
 const ssr = (await import(SERVER_ENTRY)) as {
   default: { fetch(req: Request): Promise<Response> | Response };
@@ -66,7 +77,7 @@ const server = Bun.serve<WsAttachment>({
       return new Response("WebSocket upgrade failed", { status: 426 });
     }
 
-    const apiResponse = await handleApi(req, { db, sessions, meta });
+    const apiResponse = await handleApi(req, { db, sessions, meta, settings });
     if (apiResponse) return apiResponse;
 
     const asset = await serveStatic(url.pathname);

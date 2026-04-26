@@ -73,3 +73,10 @@ export async function detectCurrentBranch(repoPath: string): Promise<string | nu
   const branch = result.stdout.toString().trim();
   return branch.length > 0 ? branch : null;
 }
+
+export async function isGitDirty(repoPath: string): Promise<boolean> {
+  const absolute = resolve(repoPath);
+  const result = await $`git -C ${absolute} status --porcelain`.quiet().nothrow();
+  if (result.exitCode !== 0) return false;
+  return result.stdout.toString().trim().length > 0;
+}

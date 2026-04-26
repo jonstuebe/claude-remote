@@ -20,6 +20,10 @@ export type RegisterProjectInput = {
   repo_path: string;
 };
 
+export type UpdateProjectInput = {
+  permissions_mode?: PermissionsMode;
+};
+
 export class ProjectValidationError extends Error {
   readonly field: "name" | "repo_path";
   readonly code: string;
@@ -138,6 +142,19 @@ export function getProject(db: Database, id: string): Project | null {
     )
     .get(id);
   return row ? rowToProject(row) : null;
+}
+
+export function updateProject(db: Database, id: string, input: UpdateProjectInput): Project {
+  const current = getProject(db, id);
+  if (!current) throw new ProjectNotFoundError(id);
+
+  if (input.permissions_mode !== undefined) {
+    db.run("UPDATE projects SET permissions_mode = ? WHERE id = ?", [input.permissions_mode, id]);
+  }
+
+  const updated = getProject(db, id);
+  if (!updated) throw new ProjectNotFoundError(id);
+  return updated;
 }
 
 export function deleteProject(db: Database, id: string): boolean {

@@ -1,4 +1,10 @@
+import type { PermissionMode, PermissionResult } from "@anthropic-ai/claude-agent-sdk";
 import type { AssistantBlock } from "../transcript/reader.ts";
+import type {
+  PermissionDecision,
+  PermissionRequestContext,
+  PermissionRiskLevel,
+} from "../permissions/broker.ts";
 
 export type SessionEvent =
   | { kind: "session_init"; sdk_session_id: string }
@@ -13,6 +19,21 @@ export type SessionEvent =
       is_error: boolean;
     }
   | { kind: "system"; uuid: string; ts: string; subtype: string; text: string }
+  | {
+      kind: "permission_request";
+      id: string;
+      tool: string;
+      input: Record<string, unknown>;
+      summary: string;
+      riskLevel: PermissionRiskLevel;
+      input_locked: boolean;
+    }
+  | {
+      kind: "permission_decision";
+      id: string;
+      decision: PermissionDecision;
+      input_locked: boolean;
+    }
   | { kind: "error"; message: string }
   | { kind: "session_end"; reason: string };
 
@@ -68,6 +89,12 @@ export type SpawnResult = {
 export type SpawnOptions = {
   cwd: string;
   input: SpawnInput;
+  permissionMode: PermissionMode;
+  canUseTool?: (
+    toolName: string,
+    input: Record<string, unknown>,
+    context: PermissionRequestContext,
+  ) => Promise<PermissionResult>;
 };
 
 export type Spawner = (options: SpawnOptions) => SpawnResult;

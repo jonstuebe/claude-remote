@@ -210,9 +210,16 @@ function ProjectCard({
         >
           {project.repo_path}
         </p>
-        <div className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-          <GitBranch className="size-3" aria-hidden />
-          <span className="font-mono">{project.default_branch}</span>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+            <GitBranch className="size-3" aria-hidden />
+            <span className="font-mono">{project.current_branch ?? project.default_branch}</span>
+          </span>
+          {project.dirty && (
+            <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-300">
+              Dirty
+            </span>
+          )}
         </div>
       </Link>
       <button

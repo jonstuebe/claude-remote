@@ -25,7 +25,7 @@ export type ServerHandledParseResult =
   | { ok: true; action: ServerHandledAction }
   | { ok: false; error: string };
 
-const COMMAND_PATTERN = /^\/([a-zA-Z][a-zA-Z0-9_-]*)(?:\s+([\s\S]*))?$/;
+const COMMAND_PATTERN = /^\/([a-zA-Z][a-zA-Z0-9_:-]*)(?:\s+([\s\S]*))?$/;
 
 export function parseSlashCommand(input: string): { name: string; rest: string } | null {
   const trimmed = input.trim();

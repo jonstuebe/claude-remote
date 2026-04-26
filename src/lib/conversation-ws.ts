@@ -15,6 +15,21 @@ export type WsServerEvent =
       is_error: boolean;
     }
   | { kind: "system"; uuid: string; ts: string; subtype: string; text: string }
+  | {
+      kind: "permission_request";
+      id: string;
+      tool: string;
+      input: Record<string, unknown>;
+      summary: string;
+      riskLevel: "medium" | "high";
+      input_locked: boolean;
+    }
+  | {
+      kind: "permission_decision";
+      id: string;
+      decision: "allow" | "deny" | "allow_for_session";
+      input_locked: boolean;
+    }
   | { kind: "conversation_meta_updated"; conversation: Conversation }
   | { kind: "conversation_deleted"; conversation_id: string }
   | { kind: "error"; message: string }
@@ -31,6 +46,7 @@ export type ConversationWsHandlers = {
 
 export type ConversationWs = {
   send(text: string): void;
+  decidePermission(id: string, decision: "allow" | "deny" | "allow_for_session"): void;
   close(): void;
 };
 
@@ -106,6 +122,11 @@ export function connectConversationWs(
     send(text: string): void {
       if (socket && socket.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify({ kind: "user_message", text }));
+      }
+    },
+    decidePermission(id, decision): void {
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ kind: "permission_decision", id, decision }));
       }
     },
     close(): void {

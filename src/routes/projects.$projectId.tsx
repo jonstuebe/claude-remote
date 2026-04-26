@@ -1,15 +1,27 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, Outlet, useRouterState } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
-import { ChevronLeft, GitBranch, MessagesSquare, Pin, Plus, X } from "lucide-react";
+import {
+  ChevronLeft,
+  Bot,
+  GitBranch,
+  MessagesSquare,
+  Pin,
+  Plug,
+  Plus,
+  Settings,
+  X,
+} from "lucide-react";
 import { cn } from "../lib/cn";
 import { formatRelativeTime } from "../lib/time";
 import {
   ApiRequestError,
   createConversation,
   getProject,
-  listConversations,
+  importConversation,
+  listProjectConversationState,
   type Conversation,
   type CreateConversationInput,
+  type ImportableWorktree,
   type Project,
 } from "../lib/api";
 import { ConversationContextMenu } from "../components/conversation-actions";
@@ -21,21 +33,33 @@ export const Route = createFileRoute("/projects/$projectId")({
 
 type LoadState =
   | { kind: "loading" }
-  | { kind: "ok"; project: Project; conversations: Conversation[] }
+  | {
+      kind: "ok";
+      project: Project;
+      conversations: Conversation[];
+      importableWorktrees: ImportableWorktree[];
+    }
   | { kind: "not_found" }
   | { kind: "error"; message: string };
 
 function ProjectDetailRoute() {
   const { projectId } = Route.useParams();
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const isSubpage = /\/(plugins|agents|settings)\/?$/.test(pathname);
   const [state, setState] = useState<LoadState>({ kind: "loading" });
 
   const refresh = useCallback(async () => {
     try {
-      const [project, conversations] = await Promise.all([
+        const [project, conversationState] = await Promise.all([
         getProject(projectId),
-        listConversations(projectId),
+          listProjectConversationState(projectId),
       ]);
-      setState({ kind: "ok", project, conversations });
+      setState({
+        kind: "ok",
+        project,
+        conversations: conversationState.conversations,
+        importableWorktrees: conversationState.importable_worktrees,
+      });
     } catch (err) {
       if (err instanceof ApiRequestError && err.status === 404) {
         setState({ kind: "not_found" });
@@ -49,8 +73,11 @@ function ProjectDetailRoute() {
   }, [projectId]);
 
   useEffect(() => {
+    if (isSubpage) return;
     void refresh();
-  }, [refresh]);
+  }, [isSubpage, refresh]);
+
+  if (isSubpage) return <Outlet />;
 
   return (
     <main className="mx-auto flex min-h-dvh max-w-3xl flex-col px-5 py-6">
@@ -83,11 +110,21 @@ function ProjectDetailRoute() {
         <ProjectDetail
           project={state.project}
           conversations={state.conversations}
+          importableWorktrees={state.importableWorktrees}
           onConversationCreated={(conversation) =>
             setState({
               kind: "ok",
               project: state.project,
               conversations: [...state.conversations, conversation],
+              importableWorktrees: state.importableWorktrees,
+            })
+          }
+          onConversationImported={(conversation, path) =>
+            setState({
+              kind: "ok",
+              project: state.project,
+              conversations: [...state.conversations, conversation],
+              importableWorktrees: state.importableWorktrees.filter((item) => item.path !== path),
             })
           }
           onConversationUpdated={(conversation) =>
@@ -97,6 +134,7 @@ function ProjectDetailRoute() {
               conversations: state.conversations.map((item) =>
                 item.id === conversation.id ? conversation : item,
               ),
+              importableWorktrees: state.importableWorktrees,
             })
           }
           onConversationDeleted={(id) =>
@@ -104,6 +142,7 @@ function ProjectDetailRoute() {
               kind: "ok",
               project: state.project,
               conversations: state.conversations.filter((item) => item.id !== id),
+              importableWorktrees: state.importableWorktrees,
             })
           }
         />
@@ -115,13 +154,17 @@ function ProjectDetailRoute() {
 function ProjectDetail({
   project,
   conversations,
+  importableWorktrees,
   onConversationCreated,
+  onConversationImported,
   onConversationUpdated,
   onConversationDeleted,
 }: {
   project: Project;
   conversations: Conversation[];
+  importableWorktrees: ImportableWorktree[];
   onConversationCreated: (conversation: Conversation) => void;
+  onConversationImported: (conversation: Conversation, path: string) => void;
   onConversationUpdated: (conversation: Conversation) => void;
   onConversationDeleted: (id: string) => void;
 }) {
@@ -130,7 +173,35 @@ function ProjectDetail({
   return (
     <>
       <header className="mb-6">
-        <h1 className="text-2xl font-semibold tracking-tight">{project.name}</h1>
+        <div className="flex items-start justify-between gap-3">
+          <h1 className="text-2xl font-semibold tracking-tight">{project.name}</h1>
+          <div className="flex gap-2">
+            <Link
+              to="/projects/$projectId/plugins"
+              params={{ projectId: project.id }}
+              className="inline-flex h-9 items-center gap-2 rounded-lg bg-muted px-3 text-sm font-medium transition hover:bg-accent"
+            >
+              <Plug className="size-4" aria-hidden />
+              <span>Plugins</span>
+            </Link>
+            <Link
+              to="/projects/$projectId/agents"
+              params={{ projectId: project.id }}
+              className="inline-flex h-9 items-center gap-2 rounded-lg bg-muted px-3 text-sm font-medium transition hover:bg-accent"
+            >
+              <Bot className="size-4" aria-hidden />
+              <span>Agents</span>
+            </Link>
+            <Link
+              to="/projects/$projectId/settings"
+              params={{ projectId: project.id }}
+              className="inline-flex h-9 items-center gap-2 rounded-lg bg-muted px-3 text-sm font-medium transition hover:bg-accent"
+            >
+              <Settings className="size-4" aria-hidden />
+              <span>Settings</span>
+            </Link>
+          </div>
+        </div>
         <p
           className="mt-1 truncate font-mono text-xs text-muted-foreground"
           title={project.repo_path}
@@ -139,8 +210,13 @@ function ProjectDetail({
         </p>
         <div className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
           <GitBranch className="size-3" aria-hidden />
-          <span className="font-mono">{project.default_branch}</span>
+          <span className="font-mono">{project.current_branch ?? project.default_branch}</span>
         </div>
+        {project.dirty && (
+          <span className="ml-2 inline-flex rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-300">
+            Dirty
+          </span>
+        )}
       </header>
 
       <section>
@@ -176,6 +252,14 @@ function ProjectDetail({
           />
         )}
 
+        {importableWorktrees.length > 0 && (
+          <ImportableWorktrees
+            projectId={project.id}
+            worktrees={importableWorktrees}
+            onImported={onConversationImported}
+          />
+        )}
+
         {conversations.length === 0 ? (
           <ConversationsEmpty />
         ) : (
@@ -196,6 +280,66 @@ function ProjectDetail({
         )}
       </section>
     </>
+  );
+}
+
+function ImportableWorktrees({
+  projectId,
+  worktrees,
+  onImported,
+}: {
+  projectId: string;
+  worktrees: ImportableWorktree[];
+  onImported: (conversation: Conversation, path: string) => void;
+}) {
+  const [importingPath, setImportingPath] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleImport = async (worktree: ImportableWorktree) => {
+    setImportingPath(worktree.path);
+    setError(null);
+    try {
+      const conversation = await importConversation(projectId, worktree.path);
+      onImported(conversation, worktree.path);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Import failed");
+    } finally {
+      setImportingPath(null);
+    }
+  };
+
+  return (
+    <div className="mb-4 rounded-2xl border border-dashed border-border/70 bg-card p-4">
+      <h3 className="text-sm font-medium">Importable worktrees</h3>
+      <p className="mt-1 text-xs text-muted-foreground">
+        These git worktrees exist on disk but are not attached to a conversation yet.
+      </p>
+      {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
+      <ul className="mt-3 flex flex-col gap-2">
+        {worktrees.map((worktree) => (
+          <li
+            key={worktree.path}
+            className="flex items-center justify-between gap-3 rounded-lg bg-background/60 p-3"
+          >
+            <div className="min-w-0">
+              <div className="truncate font-mono text-xs">{worktree.path}</div>
+              <div className="mt-1 flex flex-wrap gap-2 text-xs text-muted-foreground">
+                <span>{worktree.branch ?? "detached"}</span>
+                {worktree.session_id && <span>session {worktree.session_id.slice(0, 8)}</span>}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => void handleImport(worktree)}
+              disabled={importingPath === worktree.path}
+              className="inline-flex h-8 shrink-0 items-center rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {importingPath === worktree.path ? "Importing…" : "Import"}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -430,6 +574,14 @@ function ConversationCard({ conversation }: { conversation: Conversation }) {
             <time dateTime={conversation.last_active_at}>
               {formatRelativeTime(conversation.last_active_at)}
             </time>
+            {conversation.status === "orphaned" && (
+              <span className="rounded-full bg-destructive/10 px-2 py-0.5 font-medium text-destructive">
+                Orphaned
+              </span>
+            )}
+            {conversation.status === "archived" && (
+              <span className="rounded-full bg-muted px-2 py-0.5 font-medium">Archived</span>
+            )}
           </div>
         </div>
       </Link>
