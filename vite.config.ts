@@ -9,6 +9,9 @@ const apiPort = Number(process.env.API_PORT ?? 2634);
 
 export default defineConfig({
   resolve: { tsconfigPaths: true },
+  define: {
+    "import.meta.env.VITE_API_PORT": JSON.stringify(String(apiPort)),
+  },
   server: {
     port,
     host: process.env.HOST ?? "127.0.0.1",

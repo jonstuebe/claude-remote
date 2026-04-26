@@ -34,6 +34,18 @@ export type ConversationWs = {
 const INITIAL_BACKOFF_MS = 250;
 const MAX_BACKOFF_MS = 5_000;
 
+function buildWsUrl(conversationId: string): string {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const path = `/api/conversations/${encodeURIComponent(conversationId)}/ws`;
+  // Vite's HTTP proxy hangs on WebSocket upgrades, so in dev we hit the API port
+  // directly. In prod the API and the static frontend are served from the same origin.
+  if (import.meta.env.DEV) {
+    const apiPort = import.meta.env.VITE_API_PORT ?? "2634";
+    return `${protocol}//${window.location.hostname}:${apiPort}${path}`;
+  }
+  return `${protocol}//${window.location.host}${path}`;
+}
+
 export function connectConversationWs(
   conversationId: string,
   handlers: ConversationWsHandlers,
@@ -46,11 +58,7 @@ export function connectConversationWs(
   const open = (): void => {
     if (closedByUser) return;
     handlers.onState("connecting");
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const url = `${protocol}//${window.location.host}/api/conversations/${encodeURIComponent(
-      conversationId,
-    )}/ws`;
-    const ws = new WebSocket(url);
+    const ws = new WebSocket(buildWsUrl(conversationId));
     socket = ws;
 
     ws.addEventListener("open", () => {
