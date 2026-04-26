@@ -10,6 +10,7 @@ import {
   WifiOff,
 } from "lucide-react";
 import { cn } from "../lib/cn";
+import { Markdown } from "../components/markdown";
 import {
   ApiRequestError,
   getConversation,
@@ -415,8 +416,8 @@ function MessageItem({
   if (message.kind === "user_message") {
     return (
       <li className="flex justify-end">
-        <div className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-primary px-3 py-2 text-sm text-primary-foreground">
-          {message.text}
+        <div className="max-w-[85%] rounded-2xl rounded-br-md bg-primary px-3 py-2 text-sm text-primary-foreground">
+          <Markdown>{message.text}</Markdown>
         </div>
       </li>
     );
@@ -532,7 +533,7 @@ function AssistantBlockView({
   toolResults: Map<string, Extract<TranscriptMessage, { kind: "tool_result" }>>;
 }) {
   if (block.type === "text") {
-    return <p className="whitespace-pre-wrap">{block.text}</p>;
+    return <Markdown>{block.text}</Markdown>;
   }
   if (block.type === "thinking") {
     return (
