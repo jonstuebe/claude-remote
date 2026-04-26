@@ -10,10 +10,13 @@ import { registerProject } from "../server/projects/registry.ts";
 import {
   ConversationValidationError,
   createConversation,
+  deleteConversation,
   ensureDefaultConversation,
   getConversation,
   listConversations,
+  updateConversation,
 } from "../server/conversations/registry.ts";
+import { worktreeExists } from "../server/worktrees/manager.ts";
 
 const MIGRATIONS_DIR = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -134,6 +137,70 @@ describe("Conversations Registry", () => {
 
     expect(getConversation(db, created.id)?.id).toBe(created.id);
     expect(getConversation(db, "nope")).toBeNull();
+  });
+
+  test("updateConversation persists title, color, and archive status", async () => {
+    const project = await makeProject("Update");
+    const created = await ensureDefaultConversation(db, project);
+
+    const updated = updateConversation(db, created.id, {
+      title: "New title",
+      color: "purple",
+      archived: true,
+    });
+
+    expect(updated.title).toBe("New title");
+    expect(updated.color).toBe("purple");
+    expect(updated.status).toBe("archived");
+    expect(getConversation(db, created.id)).toMatchObject({
+      title: "New title",
+      color: "purple",
+      status: "archived",
+    });
+  });
+
+  test("updateConversation rejects empty titles and unknown colors", async () => {
+    const project = await makeProject("ValidateUpdate");
+    const created = await ensureDefaultConversation(db, project);
+
+    expect(() => updateConversation(db, created.id, { title: "   " })).toThrow(
+      ConversationValidationError,
+    );
+    expect(() => updateConversation(db, created.id, { color: "chartreuse" as never })).toThrow(
+      ConversationValidationError,
+    );
+  });
+
+  test("deleteConversation removes only the row when worktree removal is not requested", async () => {
+    const project = await makeProject("DeleteRow");
+    const conversation = await createConversation(db, project, {
+      mode: "new-worktree",
+      branch: "feature/delete-row",
+    });
+
+    await deleteConversation(db, project, conversation, { removeWorktree: false });
+
+    expect(getConversation(db, conversation.id)).toBeNull();
+    expect(await worktreeExists(project.repo_path, conversation.worktree_path)).toBe(true);
+  });
+
+  test("deleteConversation can remove the owned worktree and warns on dirty worktrees", async () => {
+    const project = await makeProject("DeleteWorktree");
+    const conversation = await createConversation(db, project, {
+      mode: "new-worktree",
+      branch: "feature/delete-worktree",
+    });
+    writeFileSync(join(conversation.worktree_path, "dirty.txt"), "dirty\n");
+
+    await expect(
+      deleteConversation(db, project, conversation, { removeWorktree: true }),
+    ).rejects.toMatchObject({ code: "dirty_worktree" });
+    expect(getConversation(db, conversation.id)?.id).toBe(conversation.id);
+
+    await deleteConversation(db, project, conversation, { removeWorktree: true, force: true });
+
+    expect(getConversation(db, conversation.id)).toBeNull();
+    expect(await worktreeExists(project.repo_path, conversation.worktree_path)).toBe(false);
   });
 });
 

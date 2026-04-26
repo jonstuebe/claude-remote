@@ -7,6 +7,7 @@ import {
   getConversation,
   getConversationMessages,
   sendConversationMessage,
+  updateConversation,
   type AssistantBlock,
   type Conversation,
   type TranscriptMessage,
@@ -17,6 +18,7 @@ import {
   type ConversationWs,
   type WsServerEvent,
 } from "../lib/conversation-ws";
+import { COLOR_SWATCHES, isConversationColor, parseServerHandled } from "../lib/slash-commands";
 
 export const Route = createFileRoute("/conversations/$conversationId")({
   component: ConversationRoute,
@@ -83,6 +85,18 @@ function ConversationRoute() {
     function handleWsEvent(event: WsServerEvent): void {
       if (event.kind === "ready" || event.kind === "session_init" || event.kind === "pong") return;
       if (event.kind === "session_end") return;
+      if (event.kind === "conversation_meta_updated") {
+        setLoad((prev) =>
+          prev.kind === "ok" && prev.conversation.id === event.conversation.id
+            ? { kind: "ok", conversation: event.conversation }
+            : prev,
+        );
+        return;
+      }
+      if (event.kind === "conversation_deleted" && event.conversation_id === conversationId) {
+        setLoad({ kind: "not_found" });
+        return;
+      }
       if (event.kind === "error") {
         setErrorBanner(event.message);
         return;
@@ -114,6 +128,22 @@ function ConversationRoute() {
     setSending(true);
     setErrorBanner(null);
     try {
+      const serverHandled = parseServerHandled(text);
+      if (serverHandled) {
+        if (!serverHandled.ok) {
+          setErrorBanner(serverHandled.error);
+          return;
+        }
+        const input =
+          serverHandled.action.kind === "rename"
+            ? { title: serverHandled.action.title }
+            : { color: serverHandled.action.color };
+        const conversation = await updateConversation(conversationId, input);
+        setLoad({ kind: "ok", conversation });
+        setDraft("");
+        return;
+      }
+
       await sendConversationMessage(conversationId, text);
       const optimistic: TranscriptMessage = {
         kind: "user_message",
@@ -133,7 +163,7 @@ function ConversationRoute() {
   }, [conversationId, draft, sending]);
 
   return (
-    <main className="mx-auto flex h-dvh max-w-screen-md flex-col px-5 py-4">
+    <main className="mx-auto flex h-dvh max-w-3xl flex-col px-5 py-4">
       <header className="mb-3 flex items-center justify-between gap-3">
         {load.kind === "ok" ? (
           <Link
@@ -173,7 +203,10 @@ function ConversationRoute() {
       {load.kind === "ok" && (
         <>
           <div className="mb-3">
-            <h1 className="truncate text-lg font-semibold">{load.conversation.title}</h1>
+            <div className="flex items-center gap-2">
+              <ConversationColorDot conversation={load.conversation} />
+              <h1 className="truncate text-lg font-semibold">{load.conversation.title}</h1>
+            </div>
             <div className="mt-1 inline-flex items-center gap-1.5 rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
               <GitBranch className="size-3" aria-hidden />
               <span className="font-mono">{load.conversation.branch}</span>
@@ -213,6 +246,16 @@ function ConversationRoute() {
         </>
       )}
     </main>
+  );
+}
+
+function ConversationColorDot({ conversation }: { conversation: Conversation }) {
+  if (!conversation.color || !isConversationColor(conversation.color)) return null;
+  return (
+    <span
+      className={cn("size-3 shrink-0 rounded-full", COLOR_SWATCHES[conversation.color])}
+      aria-label={`${conversation.color} conversation`}
+    />
   );
 }
 
@@ -276,7 +319,7 @@ function MessageItem({ message }: { message: TranscriptMessage }) {
           <div className="mb-1 text-[10px] uppercase tracking-wide opacity-70">
             tool result · {message.tool_use_id.slice(0, 8)}
           </div>
-          <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words">
+          <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap wrap-break-word">
             {truncate(message.content, 1200)}
           </pre>
         </div>
@@ -311,7 +354,7 @@ function AssistantBlockView({ block }: { block: AssistantBlock }) {
       <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
         tool · {block.name}
       </div>
-      <pre className="mt-1 whitespace-pre-wrap break-words text-muted-foreground">
+      <pre className="mt-1 whitespace-pre-wrap wrap-break-word text-muted-foreground">
         {truncate(JSON.stringify(block.input, null, 2), 400)}
       </pre>
     </div>

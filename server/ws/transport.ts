@@ -1,6 +1,7 @@
 import type { ServerWebSocket } from "bun";
 import type { SessionManager } from "../sessions/manager.ts";
 import type { SessionEvent } from "../sessions/types.ts";
+import type { MetaBroadcastMessage, MetaBroadcaster } from "./meta-broadcaster.ts";
 
 export type WsClientMessage =
   | { kind: "user_message"; text: string }
@@ -9,6 +10,7 @@ export type WsClientMessage =
 
 export type WsServerMessage =
   | SessionEvent
+  | MetaBroadcastMessage
   | { kind: "ping" }
   | { kind: "pong" }
   | { kind: "ready"; conversation_id: string };
@@ -16,6 +18,7 @@ export type WsServerMessage =
 export type WsAttachment = {
   conversationId: string;
   unsubscribe?: () => void;
+  unsubscribeMeta?: () => void;
   heartbeat?: ReturnType<typeof setInterval>;
 };
 
@@ -25,6 +28,7 @@ export function attachWebSocket(
   ws: ServerWebSocket<WsAttachment>,
   conversationId: string,
   manager: SessionManager,
+  meta: MetaBroadcaster,
 ): WsAttachment {
   const send = (message: WsServerMessage): void => {
     try {
@@ -35,6 +39,7 @@ export function attachWebSocket(
   };
 
   const unsubscribe = manager.subscribe(conversationId, send);
+  const unsubscribeMeta = meta.subscribe(conversationId, send);
   for (const event of manager.bufferedEvents(conversationId)) {
     send(event);
   }
@@ -44,12 +49,13 @@ export function attachWebSocket(
     send({ kind: "ping" });
   }, HEARTBEAT_INTERVAL_MS);
 
-  return { conversationId, unsubscribe, heartbeat };
+  return { conversationId, unsubscribe, unsubscribeMeta, heartbeat };
 }
 
 export function detachWebSocket(attachment: WsAttachment): void {
   if (attachment.heartbeat !== undefined) clearInterval(attachment.heartbeat);
   attachment.unsubscribe?.();
+  attachment.unsubscribeMeta?.();
 }
 
 export function parseClientMessage(raw: string | Buffer): WsClientMessage | null {

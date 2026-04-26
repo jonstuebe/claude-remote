@@ -1,4 +1,5 @@
 import type { AssistantBlock } from "./api";
+import type { Conversation } from "./api";
 
 export type WsServerEvent =
   | { kind: "ready"; conversation_id: string }
@@ -14,6 +15,8 @@ export type WsServerEvent =
       is_error: boolean;
     }
   | { kind: "system"; uuid: string; ts: string; subtype: string; text: string }
+  | { kind: "conversation_meta_updated"; conversation: Conversation }
+  | { kind: "conversation_deleted"; conversation_id: string }
   | { kind: "error"; message: string }
   | { kind: "session_end"; reason: string }
   | { kind: "ping" }

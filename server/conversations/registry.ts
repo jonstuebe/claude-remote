@@ -3,7 +3,8 @@ import { resolve } from "node:path";
 import type { Database } from "bun:sqlite";
 import { detectCurrentBranch } from "../git.ts";
 import type { Project } from "../projects/registry.ts";
-import { createWorktree, WorktreeError } from "../worktrees/manager.ts";
+import { isConversationColor, type ConversationColor } from "./palette.ts";
+import { createWorktree, removeWorktree, WorktreeError } from "../worktrees/manager.ts";
 
 export type ConversationStatus = "active" | "orphaned" | "archived";
 
@@ -33,6 +34,8 @@ export class ConversationNotFoundError extends Error {
 export type ConversationValidationCode =
   | "invalid_mode"
   | "branch_required"
+  | "invalid_title"
+  | "invalid_color"
   | "worktree_in_use"
   | "worktree_create_failed";
 
@@ -55,6 +58,17 @@ export type CreateConversationInput =
   | { mode: "main" }
   | { mode: "new-worktree"; branch: string; base_branch?: string }
   | { mode: "existing-branch"; branch: string };
+
+export type UpdateConversationInput = {
+  title?: string;
+  color?: ConversationColor | null;
+  archived?: boolean;
+};
+
+export type DeleteConversationOptions = {
+  removeWorktree?: boolean;
+  force?: boolean;
+};
 
 const CONVERSATION_COLUMNS =
   "id, project_id, worktree_path, branch, session_id, title, color, is_default, status, created_at, last_active_at";
@@ -146,6 +160,82 @@ export function getConversation(db: Database, id: string): Conversation | null {
     )
     .get(id);
   return row ? rowToConversation(row) : null;
+}
+
+export function updateConversation(
+  db: Database,
+  id: string,
+  input: UpdateConversationInput,
+): Conversation {
+  const current = getConversation(db, id);
+  if (!current) throw new ConversationNotFoundError(id);
+
+  let title = current.title;
+  if (input.title !== undefined) {
+    const trimmed = input.title.trim();
+    if (trimmed.length === 0) {
+      throw new ConversationValidationError(
+        "invalid_title",
+        null,
+        "Conversation title cannot be empty",
+      );
+    }
+    title = trimmed;
+  }
+
+  let color = current.color;
+  if (input.color !== undefined) {
+    if (input.color !== null && !isConversationColor(input.color)) {
+      throw new ConversationValidationError(
+        "invalid_color",
+        null,
+        `Conversation color must be one of the preset palette names`,
+      );
+    }
+    color = input.color;
+  }
+
+  const status =
+    input.archived === undefined ? current.status : input.archived ? "archived" : "active";
+
+  db.run("UPDATE conversations SET title = ?, color = ?, status = ? WHERE id = ?", [
+    title,
+    color,
+    status,
+    id,
+  ]);
+
+  const updated = getConversation(db, id);
+  if (!updated) throw new ConversationNotFoundError(id);
+  return updated;
+}
+
+export async function deleteConversation(
+  db: Database,
+  project: Project,
+  conversation: Conversation,
+  options: DeleteConversationOptions = {},
+): Promise<void> {
+  const shouldRemoveWorktree =
+    options.removeWorktree === true &&
+    conversation.worktree_path !== project.repo_path &&
+    !conversation.is_default;
+
+  if (shouldRemoveWorktree) {
+    try {
+      await removeWorktree(project.repo_path, conversation.worktree_path, {
+        force: options.force === true,
+      });
+    } catch (err) {
+      if (err instanceof WorktreeError && err.code === "not_a_worktree") {
+        // The row can still be deleted if the worktree was already removed externally.
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  db.run("DELETE FROM conversations WHERE id = ?", [conversation.id]);
 }
 
 function isPathClaimed(db: Database, projectId: string, worktreePath: string): boolean {

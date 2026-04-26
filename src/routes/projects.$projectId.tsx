@@ -12,6 +12,8 @@ import {
   type CreateConversationInput,
   type Project,
 } from "../lib/api";
+import { ConversationContextMenu } from "../components/conversation-actions";
+import { COLOR_SWATCHES, isConversationColor } from "../lib/slash-commands";
 
 export const Route = createFileRoute("/projects/$projectId")({
   component: ProjectDetailRoute,
@@ -51,7 +53,7 @@ function ProjectDetailRoute() {
   }, [refresh]);
 
   return (
-    <main className="mx-auto flex min-h-dvh max-w-screen-md flex-col px-5 py-6">
+    <main className="mx-auto flex min-h-dvh max-w-3xl flex-col px-5 py-6">
       <Link
         to="/"
         className="mb-4 inline-flex items-center gap-1 self-start text-sm text-muted-foreground transition hover:text-foreground"
@@ -88,6 +90,22 @@ function ProjectDetailRoute() {
               conversations: [...state.conversations, conversation],
             })
           }
+          onConversationUpdated={(conversation) =>
+            setState({
+              kind: "ok",
+              project: state.project,
+              conversations: state.conversations.map((item) =>
+                item.id === conversation.id ? conversation : item,
+              ),
+            })
+          }
+          onConversationDeleted={(id) =>
+            setState({
+              kind: "ok",
+              project: state.project,
+              conversations: state.conversations.filter((item) => item.id !== id),
+            })
+          }
         />
       )}
     </main>
@@ -98,10 +116,14 @@ function ProjectDetail({
   project,
   conversations,
   onConversationCreated,
+  onConversationUpdated,
+  onConversationDeleted,
 }: {
   project: Project;
   conversations: Conversation[];
   onConversationCreated: (conversation: Conversation) => void;
+  onConversationUpdated: (conversation: Conversation) => void;
+  onConversationDeleted: (id: string) => void;
 }) {
   const [showForm, setShowForm] = useState(false);
 
@@ -159,7 +181,16 @@ function ProjectDetail({
         ) : (
           <ul className="flex flex-col gap-3">
             {conversations.map((conversation) => (
-              <ConversationCard key={conversation.id} conversation={conversation} />
+              <li key={conversation.id}>
+                <ConversationContextMenu
+                  conversation={conversation}
+                  project={project}
+                  onUpdated={onConversationUpdated}
+                  onDeleted={onConversationDeleted}
+                >
+                  <ConversationCard conversation={conversation} />
+                </ConversationContextMenu>
+              </li>
             ))}
           </ul>
         )}
@@ -361,8 +392,13 @@ function inputClass(hasError: boolean): string {
 }
 
 function ConversationCard({ conversation }: { conversation: Conversation }) {
+  const swatchClass =
+    conversation.color && isConversationColor(conversation.color)
+      ? COLOR_SWATCHES[conversation.color]
+      : null;
+
   return (
-    <li
+    <div
       className={cn(
         "rounded-2xl border bg-card transition hover:border-border",
         conversation.is_default ? "border-primary/40" : "border-border/60",
@@ -375,6 +411,12 @@ function ConversationCard({ conversation }: { conversation: Conversation }) {
       >
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
+            {swatchClass && (
+              <span
+                className={cn("size-3 shrink-0 rounded-full", swatchClass)}
+                aria-label={`${conversation.color} conversation`}
+              />
+            )}
             {conversation.is_default && (
               <Pin className="size-3.5 shrink-0 text-primary" aria-label="Default conversation" />
             )}
@@ -391,7 +433,7 @@ function ConversationCard({ conversation }: { conversation: Conversation }) {
           </div>
         </div>
       </Link>
-    </li>
+    </div>
   );
 }
 

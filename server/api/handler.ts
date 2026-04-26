@@ -8,21 +8,30 @@ import {
   type Project,
 } from "../projects/registry.ts";
 import {
+  ConversationNotFoundError,
   ConversationValidationError,
   createConversation,
+  deleteConversation,
   ensureDefaultConversation,
   getConversation,
   listConversations,
+  updateConversation,
   type Conversation,
   type CreateConversationInput,
+  type UpdateConversationInput,
 } from "../conversations/registry.ts";
+import { isConversationColor } from "../conversations/palette.ts";
 import type { SessionManager } from "../sessions/manager.ts";
 import { SessionStartError } from "../sessions/manager.ts";
 import { readTranscript } from "../transcript/reader.ts";
+import { WorktreeError } from "../worktrees/manager.ts";
+import type { MetaBroadcaster } from "../ws/meta-broadcaster.ts";
+import { listServerHandledCommands } from "../slash-commands/registry.ts";
 
 export type ApiContext = {
   db: Database;
   sessions: SessionManager;
+  meta: MetaBroadcaster;
 };
 
 const json = (status: number, body: unknown): Response =>
@@ -53,6 +62,10 @@ function conversationByIdMatch(pathname: string): string | null {
 function conversationMessagesMatch(pathname: string): string | null {
   const m = /^\/api\/conversations\/([^/]+)\/messages\/?$/.exec(pathname);
   return m ? decodeURIComponent(m[1]!) : null;
+}
+
+function slashCommandsUrl(pathname: string): boolean {
+  return pathname === "/api/slash-commands" || pathname === "/api/slash-commands/";
 }
 
 async function readJson(req: Request): Promise<unknown> {
@@ -205,6 +218,117 @@ function handleGetConversation(id: string, ctx: ApiContext): Response {
   return json(200, conversation);
 }
 
+async function handleUpdateConversation(
+  id: string,
+  req: Request,
+  ctx: ApiContext,
+): Promise<Response> {
+  const body = await readJson(req);
+  if (!isPlainObject(body)) {
+    return json(400, {
+      error: { code: "invalid_body", message: "Request body must be a JSON object" },
+    });
+  }
+
+  const input: UpdateConversationInput = {};
+  if ("title" in body) {
+    if (typeof body.title !== "string") {
+      return json(400, {
+        error: { code: "invalid_body", field: "title", message: "title must be a string" },
+      });
+    }
+    input.title = body.title;
+  }
+  if ("color" in body) {
+    if (body.color !== null && !isConversationColor(body.color)) {
+      return json(400, {
+        error: {
+          code: "invalid_color",
+          field: "color",
+          message: "color must be null or a preset palette name",
+        },
+      });
+    }
+    input.color = body.color;
+  }
+  if ("archived" in body) {
+    if (typeof body.archived !== "boolean") {
+      return json(400, {
+        error: { code: "invalid_body", field: "archived", message: "archived must be a boolean" },
+      });
+    }
+    input.archived = body.archived;
+  }
+
+  try {
+    const conversation = updateConversation(ctx.db, id, input);
+    ctx.meta.broadcast(id, { kind: "conversation_meta_updated", conversation });
+    return json(200, conversation);
+  } catch (err) {
+    if (err instanceof ConversationNotFoundError) {
+      return json(404, { error: { code: "not_found", message: err.message } });
+    }
+    if (err instanceof ConversationValidationError) {
+      return json(400, {
+        error: { code: err.code, field: err.field ?? undefined, message: err.message },
+      });
+    }
+    throw err;
+  }
+}
+
+async function handleDeleteConversation(
+  id: string,
+  req: Request,
+  ctx: ApiContext,
+): Promise<Response> {
+  const conversation = getConversation(ctx.db, id);
+  if (!conversation) {
+    return json(404, {
+      error: { code: "not_found", message: `No conversation with id "${id}"` },
+    });
+  }
+  const project = getProject(ctx.db, conversation.project_id);
+  if (!project) {
+    return json(404, {
+      error: {
+        code: "project_not_found",
+        message: `No project with id "${conversation.project_id}"`,
+      },
+    });
+  }
+
+  let removeWorktree = false;
+  let force = false;
+  if (req.method === "DELETE") {
+    const body = await readJson(req);
+    if (body !== null) {
+      if (!isPlainObject(body)) {
+        return json(400, {
+          error: { code: "invalid_body", message: "Request body must be a JSON object" },
+        });
+      }
+      removeWorktree = body.removeWorktree === true || body.remove_worktree === true;
+      force = body.force === true;
+    }
+  }
+
+  try {
+    await ctx.sessions.stop(id);
+    await deleteConversation(ctx.db, project, conversation, { removeWorktree, force });
+    ctx.meta.broadcast(id, { kind: "conversation_deleted", conversation_id: id });
+    return new Response(null, { status: 204 });
+  } catch (err) {
+    if (err instanceof WorktreeError) {
+      const status = err.code === "dirty_worktree" ? 409 : 400;
+      return json(status, {
+        error: { code: err.code, message: err.message },
+      });
+    }
+    throw err;
+  }
+}
+
 async function handleGetConversationMessages(id: string, ctx: ApiContext): Promise<Response> {
   const conversation = getConversation(ctx.db, id);
   if (!conversation) {
@@ -255,6 +379,16 @@ export async function handleApi(req: Request, ctx: ApiContext): Promise<Response
   const url = new URL(req.url);
   if (!url.pathname.startsWith("/api/")) return null;
 
+  if (slashCommandsUrl(url.pathname)) {
+    if (req.method === "GET") return json(200, { commands: listServerHandledCommands() });
+    return json(405, {
+      error: {
+        code: "method_not_allowed",
+        message: `Method ${req.method} not allowed on ${url.pathname}`,
+      },
+    });
+  }
+
   if (projectsListUrl(url.pathname)) {
     if (req.method === "GET") return handleListProjects(ctx);
     if (req.method === "POST") return handleCreateProject(req, ctx);
@@ -295,6 +429,8 @@ export async function handleApi(req: Request, ctx: ApiContext): Promise<Response
   const conversationId = conversationByIdMatch(url.pathname);
   if (conversationId) {
     if (req.method === "GET") return handleGetConversation(conversationId, ctx);
+    if (req.method === "PATCH") return handleUpdateConversation(conversationId, req, ctx);
+    if (req.method === "DELETE") return handleDeleteConversation(conversationId, req, ctx);
     return json(405, {
       error: {
         code: "method_not_allowed",

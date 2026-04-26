@@ -132,6 +132,41 @@ export async function getConversation(id: string): Promise<Conversation> {
   return unwrap<Conversation>(res);
 }
 
+export type UpdateConversationInput = {
+  title?: string;
+  color?: string | null;
+  archived?: boolean;
+};
+
+export async function updateConversation(
+  id: string,
+  input: UpdateConversationInput,
+): Promise<Conversation> {
+  const res = await fetch(`/api/conversations/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return unwrap<Conversation>(res);
+}
+
+export type DeleteConversationOptions = {
+  removeWorktree?: boolean;
+  force?: boolean;
+};
+
+export async function deleteConversation(
+  id: string,
+  options: DeleteConversationOptions = {},
+): Promise<void> {
+  const res = await fetch(`/api/conversations/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(options),
+  });
+  await unwrap<void>(res);
+}
+
 export async function getConversationMessages(id: string): Promise<TranscriptMessage[]> {
   const res = await fetch(`/api/conversations/${encodeURIComponent(id)}/messages`);
   const data = await unwrap<{ messages: TranscriptMessage[] }>(res);

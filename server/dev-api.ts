@@ -12,6 +12,7 @@ import {
   parseClientMessage,
   type WsAttachment,
 } from "./ws/transport.ts";
+import { MetaBroadcaster } from "./ws/meta-broadcaster.ts";
 
 const ROOT = resolve(import.meta.dir, "..");
 const MIGRATIONS_DIR = resolve(ROOT, "server/db/migrations");
@@ -24,6 +25,7 @@ if (result.applied.length > 0) {
 }
 
 const sessions = new SessionManager({ db, spawner: sdkSpawner });
+const meta = new MetaBroadcaster();
 const pruned = sessions.pruneStaleEntries();
 if (pruned > 0) {
   console.log(`[dev-api] pruned ${pruned} stale session_ledger entr${pruned === 1 ? "y" : "ies"}`);
@@ -51,14 +53,15 @@ const server = Bun.serve<WsAttachment>({
       if (upgraded) return undefined as unknown as Response;
       return new Response("WebSocket upgrade failed", { status: 426 });
     }
-    const response = await handleApi(req, { db, sessions });
+    const response = await handleApi(req, { db, sessions, meta });
     if (response) return response;
     return new Response("Not Found", { status: 404 });
   },
   websocket: {
     open(ws) {
-      const populated = attachWebSocket(ws, ws.data.conversationId, sessions);
+      const populated = attachWebSocket(ws, ws.data.conversationId, sessions, meta);
       ws.data.unsubscribe = populated.unsubscribe;
+      ws.data.unsubscribeMeta = populated.unsubscribeMeta;
       ws.data.heartbeat = populated.heartbeat;
     },
     message: async (ws, raw) => {
